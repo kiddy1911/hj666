@@ -1,7 +1,7 @@
 /**
  * ============================================================
  *   MissAV 全站去广告 —— Quantumult X 脚本
- *   >>> 文件已更新：v3-1103（2026-11-03）<<<
+ *   >>> 文件已更新：v4-1103（2026-11-03）<<<
  *
  *   作用范围：missav.live 全部 HTML 页面
  *             （首页 / 列表 / 排行 / 详情 / 搜索 / 女优 / 发行商）
@@ -30,7 +30,25 @@
  *   · 广告删掉后的空 div 级联折叠，页面不留白洞
  *   · 顺手删掉指向广告域名的 <link rel=preconnect/dns-prefetch>
  *
- *   ── 实测（v3-1103，ego 浏览器真实页面）────────────────────
+ *   ── iOS 强制 1080p（新增 ⑨）───────────────────────────────
+ *   站点把四条分支按设备写死：
+ *     !Hls.isSupported()  → video.src = source842   ← iPhone 走这里，720p
+ *     iPad / Mac 触屏      → video.src = source1280  ← 已是 1080p
+ *     其余（桌面 hls.js）  → 自适应 + 画质菜单
+ *   iPhone Safari 没有 MediaSource，Hls.isSupported() = false，
+ *   所以永远是 720p，且画质菜单根本不存在（Plyr 不传 quality）。
+ *
+ *   改法：把该分支的 source842 换成 source1280。
+ *   安全性已实测：站点自己的 source1280 带降级 ——
+ *     有 1080p 的片子 → .../1080p/video.m3u8
+ *     没有 1080p 的片子 → .../720p/video.m3u8（与 source842 完全相同）
+ *   十个样本验证：9 个有 1080p（变量正确），1 个无 1080p（变量已降级），
+ *   异常 0。所以替换后最坏情况仍是 720p，不会黑屏、不会 404。
+ *
+ *   另加一层保险：替换后若 video 触发 error 且未正常起播，
+ *   自动回退到 source842（见 ⑥ 中 fallback）。
+ *
+ *   ── 实测（v4-1103，ego 浏览器真实页面）────────────────────
  *   页面类型     广告节点   弹窗   残留空壳   省下
  *   详情页           9 → 0   1 → 0      0     7.6 KB
  *   详情页(新片)     9 → 0   1 → 0      0     7.4 KB
@@ -40,7 +58,7 @@
  * ============================================================
  */
 
-const VER = "v3-1103";
+const VER = "v4-1103";
 
 /* ── 广告 / 追踪 / 弹窗域名 ───────────────────────────────── */
 const AD_HOSTS = [
@@ -162,6 +180,25 @@ function clean(html) {
   }
   hit.foldedBytes = folded;
 
+  /* ⑨ iOS 强制 1080p
+        !Hls.isSupported() 分支里 video.src = source842 → 换成 source1280。
+        只在"非 iPad、非触屏 Mac、Hls 不可用"这条分支里改，桌面 hls.js
+        分支一行不碰，所以桌面的画质菜单和自适应完全不受影响。 */
+  const reIos720 = /(else\s+if\s*\(\s*!\s*Hls\.isSupported\(\)\s*\)\s*\{[\s\S]{0,300}?)video\.src\s*=\s*source842/g;
+  hit.ios720 = (h.match(reIos720) || []).length;
+  if (hit.ios720 > 0) {
+    h = h.replace(
+      reIos720,
+      "$1" +
+        "video.src = (typeof source1280 !== 'undefined' && source1280) || source842;" +
+        "var _q1080err = function () {" +
+        "  video.removeEventListener('error', _q1080err);" +
+        "  if (typeof source842 !== 'undefined' && source842 && video.src !== source842) video.src = source842;" +
+        "};" +
+        "video.addEventListener('error', _q1080err);"
+    );
+  }
+
   return { html: h, hit: hit, before: before, after: h.length };
 }
 
@@ -218,7 +255,8 @@ if (typeof $response !== "undefined" && typeof $done === "function") {
             " · SDK " + r.hit.script +
             " · 统计 " + (r.hit.gtm + r.hit.link) +
             " · 弹窗 " + (r.hit.popHandler + r.hit.directPool) +
-            " · 空壳 " + r.hit.foldedBytes + "B"
+            " · 空壳 " + r.hit.foldedBytes + "B" +
+            (r.hit.ios720 ? " · iOS强制1080p" : "")
         );
         $prefs.setValueForKey(VER, KEY);
       }
