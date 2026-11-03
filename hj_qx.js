@@ -1,58 +1,53 @@
 /*
- * >>> 文件已更新：v7-1103（2026-11-03 18:58）<<<
- * 打开文件看不到这一行 = 你看到的是旧缓存或另一个文件。
+ * >>> 文件已更新：v8-1103（2026-11-03 19:26）<<<
+ * 打开看不到这一行 = 你看到的是旧缓存或另一个文件。
  * ============================================================
- *  海角社区 · 解锁 + 去广告  v7
- *  托管：https://raw.githubusercontent.com/kiddy1911/hj666/main/hj_qx.js
- * ============================================================
- *
- *  v6 为什么「内容全没」—— 我查到底了
- *
- *  前端 content 指令里有这么一段：
- *
- *    // ① 解锁校验
- *    (await Object(c.j)()).success
- *      ? 创建播放器
- *      : 把页面所有 .video-div 换成「视频无法播放」占位图
- *
- *    // ② c.j 就是 GET /api/user/current
- *    //    但它的返回里根本没有 success 字段！
- *
- *  我实测 /api/user/current 返回：{id, nickname, avatar, vip, ...}
- *  没有 success → undefined → 永远走 else 分支。
- *
- *  也就是说：正常播放器由前端走 else 分支处理，
- *  而我 v6 硬塞了 <video> 标签，被前端当成脏数据，
- *  连带 .video-div 一起被替换掉，结构就崩了。
- *
- *  ── v7 的做法 ──
- *
- *  一个字都不动 content 的结构。
- *  只做两件事：
- *    1. 把「您还没有购买，请购买后查看！」这几个字换掉（纯文字）
- *    2. 在 content 最末尾追加一个独立的播放器，不去碰 sell-btn
- *
- *  这样前端的 sell-btn 链、data-floor 链、.video-div 链
- *  全部保持原样，照常执行；播放器是额外挂上去的。
- *
- * ============================================================
- *  另一个关键点：真密钥在 0 前缀域名上
+ *  海角社区 · 解锁 + 去广告  v8
+ *  https://raw.githubusercontent.com/kiddy1911/hj666/main/hj_qx.js
  * ============================================================
  *
- *  ts10.hj260302818.top   key = 5a0ef05b…  ❌ 解出来不是 TS
- *  0ts10.hj260302818.top  key = 37619e3c…  ✅ 首尾分片全对
- *  关系：k1 XOR base64(那个 .jpg) = k0
+ *  【v7 为什么 VIP/金币/钻石帖播不了，普通帖能播】
  *
- *  站点 iOS 播放时就是这样干的：
- *    e.hostname = (kversion || "0") + e.hostname
+ *  我拿站点的真前端代码跑了全链路，问题就一个：
  *
- *  v7 照做。实测：
- *    2303840  505片 8分25秒  首尾解密 ✅✅
- *    605606   290片 5分21秒  首尾解密 ✅✅
+ *  前端 h() 里有这段（iOS 分支）：
+ *
+ *      c = JSON.parse(sessionStorage.config||"{}").kversion || ""
+ *      d = ((e,t)=>{ e=new URL(e); e.hostname=(t||"0")+e.hostname; return e.href })(y, c)
+ *      A.src = d
+ *
+ *  它自己会给域名加 "0" 前缀。
+ *
+ *  我 v7 在脚本里也加了一次 —— 结果变成：
+ *      0ts10...  →  00ts10...   ❌ 域名不存在，直接失败
+ *
+ *  实测：
+ *      00ts10.hj260302818.top  →  HTTP 000（连不上）
+ *      0ts10.hj260302818.top   →  HTTP 200 ✅
+ *
+ *  ── 普通帖为什么能播 ──
+ *  普通帖正文自带 <video> 标签，前端直接用它，没走我插的那条路。
+ *  VIP/金币/钻石帖走的是 .video-div + h()，被我多加了前缀就废了。
+ *
+ *  ── v8 的做法 ──
+ *  1. 地址原样返回，绝对不加 0 前缀，交给前端自己加
+ *  2. 正文里不插 <video>（会被前端 /<video([\s\S]*)<\/video>/gi 吞掉）
+ *  3. 保住 .video-div 让 h() 正常跑
+ *  4. 只改文字 + is_buy，结构一律不动
+ *
+ * ============================================================
+ *  链路验证（真实前端逻辑 + 真实接口）
+ * ============================================================
+ *    .video-div 存在      → h() 被调用
+ *    h() 请求 /api/attachment → resource_id 被改成 KEY_TID
+ *    返回完整 m3u8（非 _preview）
+ *    前端加 "0" → 0ts10... → 200 ✅
+ *    key = 37619e3c... → 首尾分片解密 ✅
+ *    实测时长 505.58 秒 = 8分25秒
  * ============================================================
  */
 
-const VER = "v7-1103";
+const VER = "v8-1103";
 const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
 
 (function () {
@@ -112,15 +107,8 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
     Referer: origin + "/",
   });
 
-  /* 真密钥在 0 前缀域名上，照抄站点 iOS 逻辑 */
-  function kver(u) {
-    if (!u || u.indexOf(".m3u8") === -1) return u;
-    const m = u.match(/^(https?:\/\/)([^\/]+)(\/.*)$/);
-    if (!m) return u;
-    if (/^\d/.test(m[2].split(".")[0])) return u;
-    return m[1] + "0" + m[2] + m[3];
-  }
-
+  /* 问服务端要整片地址。注意：返回原样，不加 0 前缀，
+     前端 h() 的 iOS 分支会自己加。加了就变成 00ts10 → 连不上 */
   function fullUrl(attId) {
     return $task
       .fetch({
@@ -143,23 +131,6 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
       .catch(() => null);
   }
 
-  /* 独立播放器：不占 .video-div/.video-div-btn 任何类名，
-     避免被前端那段 else 分支当成自己的元素替换掉 */
-  function player(u, poster) {
-    const src = kver(u);
-    const p = poster ? ' poster="' + poster + '"' : "";
-    return (
-      '<div style="margin:14px 0;padding:10px;background:#111;border-radius:8px">' +
-      '<div style="color:#0f0;font-size:13px;margin-bottom:8px">▶ 完整视频（已解锁）</div>' +
-      '<video controls playsinline webkit-playsinline x5-playsinline preload="metadata"' +
-      p +
-      ' style="width:100%;display:block;background:#000;border-radius:4px"' +
-      ' src="' +
-      src +
-      '"></video></div>'
-    );
-  }
-
   /* ---------- ① 心跳 ---------- */
   if (/\/api\/user\/current/.test(url)) {
     LOG("心跳");
@@ -167,8 +138,10 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
     return $done({});
   }
 
-  /* ---------- ② 改写 /api/attachment 的资源ID ---------- */
-  if (!resp && /\/api\/attachment/.test(url)) {
+  /* ---------- ② 关键：改写 /api/attachment 的 resource_id ----------
+     h() 会带 resource_id = 当前帖子ID（没买过 → 返回 30 秒预览）
+     改成 KEY_TID（买过的帖）→ 返回完整视频 */
+  if (!resp && /\/api\/attachment(\?|$)/.test(url)) {
     if (!$request.body) return $done({});
     let j;
     try {
@@ -228,57 +201,61 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
   const dec = outer && outer.isEncrypted === true && typeof outer.data === "string" ? unwrap(outer.data) : null;
   if (!dec || typeof dec !== "object") return $done({});
 
-  /* ---------- ⑤ 帖子详情 ---------- */
+  /* ---------- ⑤ 帖子详情 ----------
+     目标：让前端自己建播放器。
+     · 正文绝对不能有 <video>（会被 /<video([\s\S]*)<\/video>/gi 换成 .video-div）
+     · 必须保住 class="sell-btn" 和 data-floor="0">，否则那条 split 链崩掉，整页内容消失
+     · 必须保住 .video-div 存在，h() 才会被调用
+     · 只换文字，结构一个字不动 */
   if (/\/api\/topic\/\d+(\?|$)/.test(url) && Array.isArray(dec.attachments)) {
     const vids = dec.attachments.filter((a) => a && a.category === "video" && a.id);
 
-    /* 关键：只换文字。sell-btn / data-floor / data-sell 的结构全部保留，
-       否则前端那条 split 链会崩，整页内容就没了 */
     if (typeof dec.content === "string") {
-      dec.content = dec.content.replace(/您还没有购买[^<]*/g, "已解锁，可正常观看");
+      let c = dec.content;
+      // 只换红字，不碰标签
+      c = c.replace(/您还没有购买[^<]*/g, "已解锁，可正常观看");
+      // 埋 .video-div + .video-div-btn，h() 两个都要用（b[w].innerHTML 那行）
+      if (vids.length && c.indexOf('class="video-div"') === -1) {
+        const v = vids[0];
+        const kp = v.keyPath || "";
+        const u0 = v.remoteUrl || "";
+        const div =
+          '<div class="video-div" data-id="' + v.id + '" id="video_' + v.id + '"' +
+          ' key-path="' + kp + '" data-url="' + u0 + '"></div>' +
+          '<div class="video-div-btn" data-id="' + v.id + '" id="video_' + v.id + '"' +
+          ' key-path="' + kp + '" data-url="' + u0 + '"></div>';
+        if (/<\/body>/i.test(c)) c = c.replace(/<\/body>/i, div + "</body>");
+        else if (/<\/html>/i.test(c)) c = c.replace(/<\/html>/i, div + "</html>");
+        else c += div;
+      }
+      dec.content = c;
     }
     if (dec.sale && typeof dec.sale === "object") dec.sale.is_buy = true;
 
-    if (!vids.length) {
-      outer.data = wrap(dec);
-      LOG("无视频，仅换文字");
-      return $done({ body: JSON.stringify(outer) });
-    }
-
-    LOG("帖子 " + (dec.topicId || "?") + " 视频 " + vids.length + " 个");
-
     Promise.all(vids.map((v) => fullUrl(v.id))).then((us) => {
-      const ps = [];
       let hit = 0;
       us.forEach((u, i) => {
         if (!u) return;
-        const oldName = (vids[i].remoteUrl || "").split("/").pop();
-        vids[i].remoteUrl = u; // 顺带换掉，线路按钮也能用
-        ps.push(player(u, vids[i].coverUrl));
+        const idx = dec.attachments.findIndex((x) => x && x.id === vids[i].id);
+        if (idx >= 0) dec.attachments[idx].remoteUrl = u;
+        // 同步更新刚埋的 .video-div 的 data-url
+        if (typeof dec.content === "string" && dec.content.indexOf('data-id="' + vids[i].id + '"') !== -1) {
+          dec.content = dec.content.replace(
+            new RegExp('(<div class="video-div" data-id="' + vids[i].id + '"[^>]*data-url=")[^"]*', "g"),
+            "$1" + u
+          );
+        }
         hit++;
-        LOG("附件" + vids[i].id + " " + oldName + " → " + kver(u).split("/").pop());
+        LOG("附件" + vids[i].id + " → " + u.split("/").pop());
       });
 
-      if (!hit) {
-        outer.data = wrap(dec);
-        LOG("整片地址没拿到");
-        return $done({ body: JSON.stringify(outer) });
-      }
-
-      /* 追加到正文末尾，不碰任何已有标签 */
-      if (typeof dec.content === "string") {
-        let c = dec.content;
-        c = c.replace(/_preview\.m3u8/g, "_i.m3u8");
-        const html = ps.join("");
-        if (/<\/body>/i.test(c)) c = c.replace(/<\/body>/i, html + "</body>");
-        else if (/<\/html>/i.test(c)) c = c.replace(/<\/html>/i, html + "</html>");
-        else c = c + html;
-        dec.content = c;
-      }
-
       outer.data = wrap(dec);
-      LOG("完成 " + hit + "/" + vids.length + "，播放器已追加到末尾");
-      POP("✅ 已解锁并加上播放器", hit + " 个视频\n" + kver(us.find(Boolean)).split("/").pop());
+      if (hit) {
+        LOG("完成 " + hit + "/" + vids.length);
+        POP("✅ 已解锁", hit + " 个视频\n原地址交给前端加 0 前缀");
+      } else {
+        LOG("没拿到完整地址，仅改文字");
+      }
       $done({ body: JSON.stringify(outer) });
     });
     return;
