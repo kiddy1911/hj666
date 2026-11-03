@@ -1,53 +1,85 @@
 /*
- * >>> 文件已更新：v8-1103（2026-11-03 19:26）<<<
- * 打开看不到这一行 = 你看到的是旧缓存或另一个文件。
+ * >>> 文件已更新：v10-1103（2026-11-03 20:22）<<<
+ * 打开看到的不是这一行 = 你拿到的是旧缓存 / 另一个文件。
  * ============================================================
- *  海角社区 · 解锁 + 去广告  v8
- *  https://raw.githubusercontent.com/kiddy1911/hj666/main/hj_qx.js
+ *  海角社区 · 解锁 + 去广告  v10
+ *  https://raw.githubusercontent.com/kiddy1911/hj_qx.js
  * ============================================================
  *
- *  【v7 为什么 VIP/金币/钻石帖播不了，普通帖能播】
+ *  【v8 为什么显示内容却没播放器、下面一个点不动的图片】
  *
- *  我拿站点的真前端代码跑了全链路，问题就一个：
+ *  你看到的那个图片，我找到出处了。前端 app.js 里：
  *
- *  前端 h() 里有这段（iOS 分支）：
+ *      (await Object(c.j)()).success
+ *          ? setTimeout(()=>{ h(...) }, 550)          // ← 建真播放器
+ *          : ( t = '<div class="novdedio"><img src="loading.gif">
+ *                      <img class="palyerbtn"></div>',
+ *              v = v.replace(/<div\s+class="video-div"[^>]*>(.*?)<\/div>/g, t),
+ *              i.innerHTML = v,
+ *              ... e.addEventListener("click", ()=> u.$loginWindow() ) )
  *
- *      c = JSON.parse(sessionStorage.config||"{}").kversion || ""
- *      d = ((e,t)=>{ e=new URL(e); e.hostname=(t||"0")+e.hostname; return e.href })(y, c)
- *      A.src = d
+ *  .novdedio 就是「loading.gif + 播放按钮图」——你点的那个图片。
+ *  它绑的点击是 $loginWindow()，所以永远播不了。
  *
- *  它自己会给域名加 "0" 前缀。
+ *  ── 为什么走了 else 分支 ──
+ *  判据是 /api/user/current 的 success。
+ *  我 v8 的心跳规则写的是 $done({}) —— 把响应体清空了，
+ *  前端拿到的 e.data 是空的，`.success` = undefined → 走 else。
+ *  这是我自己的 bug，跟播放器无关。
  *
- *  我 v7 在脚本里也加了一次 —— 结果变成：
- *      0ts10...  →  00ts10...   ❌ 域名不存在，直接失败
- *
- *  实测：
- *      00ts10.hj260302818.top  →  HTTP 000（连不上）
- *      0ts10.hj260302818.top   →  HTTP 200 ✅
- *
- *  ── 普通帖为什么能播 ──
- *  普通帖正文自带 <video> 标签，前端直接用它，没走我插的那条路。
- *  VIP/金币/钻石帖走的是 .video-div + h()，被我多加了前缀就废了。
- *
- *  ── v8 的做法 ──
- *  1. 地址原样返回，绝对不加 0 前缀，交给前端自己加
- *  2. 正文里不插 <video>（会被前端 /<video([\s\S]*)<\/video>/gi 吞掉）
- *  3. 保住 .video-div 让 h() 正常跑
- *  4. 只改文字 + is_buy，结构一律不动
+ *  实测真实响应：success = true
  *
  * ============================================================
- *  链路验证（真实前端逻辑 + 真实接口）
+ *  【v9 的第一条路：修好心跳，让站点自己的播放器活过来】
  * ============================================================
- *    .video-div 存在      → h() 被调用
- *    h() 请求 /api/attachment → resource_id 被改成 KEY_TID
- *    返回完整 m3u8（非 _preview）
- *    前端加 "0" → 0ts10... → 200 ✅
- *    key = 37619e3c... → 首尾分片解密 ✅
- *    实测时长 505.58 秒 = 8分25秒
+ *  心跳改成原样返回 $response.body，success 保住 → h() 被调用。
+ *  同时 h() 依赖 data-preview 限制试看，所以埋的 .video-div
+ *  不带 data-preview，不设 30 秒上限。
+ *
+ * ============================================================
+ *  【v9 的第二条路：你问的 Safari 跳转 —— 这条路更容易】
+ * ============================================================
+ *  你说得对，Safari 自己播更简单。原因是：
+ *
+ *  Safari 原生支持 HLS，直接 open 一个 .m3u8 就行，
+ *  它会自己去拉 key 和全部分片，不需要任何自定义请求头。
+ *
+ *  我实测过（纯 GET，无头）：
+ *      m3u8       200  27445 字节
+ *      key        200  37619e3c9c79640a0168370af777c5a3
+ *      首分片     200  197216 字节
+ *      末分片     200  90064 字节
+ *
+ *  而站点播放器要经过：.video-div → h() → /api/attachment →
+ *  WASM 派生密钥 → Hls.js → 每一步都可能断。
+ *
+ *  所以 v9 在正文顶部直接放一个大按钮：
+ *      「▶ 点击用 Safari 播放完整视频」
+ *  点了就 window.location.href = 那个 m3u8，
+ *  Safari 自己接管，最稳。
+ *
+ *  页内播放器也保留，两条路都能走。
+ *
+ * ============================================================
+ *  浏览器实测（ego-browser 真实解码，v8 数据链路不变）
+ * ============================================================
+ *   钻石 2303840   ✅ 8分26秒  720x1280
+ *   金币 2301573   ✅ 2分47秒  1080x1920
+ *   VIP  605606    ✅ 5分21秒  540x960
+ *   钻石 2304257   ✅ 11分37秒 720x720
+ *
+ * ============================================================
+ *  ⚠ 关于 0 前缀（v8 已修，别改回去）
+ * ============================================================
+ *  前端 h() 的 iOS 分支会自己加：
+ *      e.hostname = (kversion||"0") + e.hostname
+ *  脚本里再加一次就变 00ts10 → HTTP 000 连不上。
+ *  实测 0ts10 → 200 ✅   00ts10 → 000 ❌
+ *  所以：地址原样给，绝对不加前缀。
  * ============================================================
  */
 
-const VER = "v8-1103";
+const VER = "v10-1103";
 const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
 
 (function () {
@@ -107,8 +139,19 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
     Referer: origin + "/",
   });
 
-  /* 问服务端要整片地址。注意：返回原样，不加 0 前缀，
-     前端 h() 的 iOS 分支会自己加。加了就变成 00ts10 → 连不上 */
+  /* Safari 专用：脚本自己加 "0" 前缀。
+     实测 ts10 给的 key 是假的（5a0ef05b…），0ts10 才是真的（37619e3c…）。
+     Safari 不走前端 h()，没人替它加，所以这里必须加。
+     注意：页内 .video-div 的 data-url 绝对不能加 —— h() 会再补一次变 00ts10。 */
+  function kver(u) {
+    if (!u) return u;
+    const m = u.match(/^(https?:\/\/)([^\/]+)(\/.*)$/);
+    if (!m) return u;
+    if (/^\d/.test(m[2])) return u; // 已经加过了
+    return m[1] + "0" + m[2] + m[3];
+  }
+
+  /* 拿完整地址。原样返回给前端（h() 自己加前缀） */
   function fullUrl(attId) {
     return $task
       .fetch({
@@ -131,16 +174,22 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
       .catch(() => null);
   }
 
-  /* ---------- ① 心跳 ---------- */
+  /* ---------- ① 心跳 ----------
+     ⚠ 这里绝对不能用 $done({})。
+     前端 c.j = GET /api/user/current，用它的 .success 决定：
+        success → h() 建真播放器
+        !success → 换成 .novdedio 占位图（就是你点的那个图片）
+     清空 body 会让 success 变 undefined，播放器就没了。 */
   if (/\/api\/user\/current/.test(url)) {
-    LOG("心跳");
+    LOG("心跳 原样放行");
     POP("✅ 脚本在运行", VER);
+    if (resp) return $done({ body: resp.body }); // 原样返回，保住 success
     return $done({});
   }
 
   /* ---------- ② 关键：改写 /api/attachment 的 resource_id ----------
-     h() 会带 resource_id = 当前帖子ID（没买过 → 返回 30 秒预览）
-     改成 KEY_TID（买过的帖）→ 返回完整视频 */
+     h() 会带 resource_id = 当前帖子ID（没买过 → 只给 30 秒预览）
+     换成 KEY_TID（已购帖）→ 给完整视频 */
   if (!resp && /\/api\/attachment(\?|$)/.test(url)) {
     if (!$request.body) return $done({});
     let j;
@@ -154,7 +203,6 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
     if (j.resource_type === "video_center") j.resource_type = "topic";
     j.resource_id = KEY_TID;
     LOG("附件" + j.id + " " + old + "→" + KEY_TID);
-    POP("🔓 替换资源ID", "附件 " + j.id + "\n" + old + " → " + KEY_TID);
     return $done({ body: JSON.stringify(j) });
   }
 
@@ -202,27 +250,31 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
   if (!dec || typeof dec !== "object") return $done({});
 
   /* ---------- ⑤ 帖子详情 ----------
-     目标：让前端自己建播放器。
-     · 正文绝对不能有 <video>（会被 /<video([\s\S]*)<\/video>/gi 换成 .video-div）
-     · 必须保住 class="sell-btn" 和 data-floor="0">，否则那条 split 链崩掉，整页内容消失
-     · 必须保住 .video-div 存在，h() 才会被调用
-     · 只换文字，结构一个字不动 */
+     目标：内容显示 + 有播放器 + Safari 按钮
+     · 正文不能有 <video>（会被 /<video([\s\S]*)<\/video>/gi 吞掉）
+     · 必须保住 class="sell-btn" 和 data-floor="0">（否则 split 链崩，整页空白）
+     · 埋 .video-div + .video-div-btn（h() 两个都要用），不带 data-preview
+     · 顶部放大按钮，直接跳 m3u8 → Safari 原生播放 */
   if (/\/api\/topic\/\d+(\?|$)/.test(url) && Array.isArray(dec.attachments)) {
     const vids = dec.attachments.filter((a) => a && a.category === "video" && a.id);
 
-    if (typeof dec.content === "string") {
+    if (typeof dec.content === "string" && vids.length) {
       let c = dec.content;
-      // 只换红字，不碰标签
       c = c.replace(/您还没有购买[^<]*/g, "已解锁，可正常观看");
-      // 埋 .video-div + .video-div-btn，h() 两个都要用（b[w].innerHTML 那行）
-      if (vids.length && c.indexOf('class="video-div"') === -1) {
+
+      /* 前端自己会建的两种情况，别重复注入：
+         ① 正文有 class="sell-btn" → 预览块会生成 .video-div
+         ② 正文自带 <video>       → 附件循环会换成 .video-div
+         只有两者都没有（如 VIP 帖）才需要我补 */
+      const feWillBuild = c.indexOf('class="sell-btn"') !== -1 || c.indexOf("<video") !== -1;
+      if (!feWillBuild && c.indexOf('class="video-div"') === -1) {
         const v = vids[0];
         const kp = v.keyPath || "";
         const u0 = v.remoteUrl || "";
         const div =
-          '<div class="video-div" data-id="' + v.id + '" id="video_' + v.id + '"' +
+          '<div class="video-div" data-id="' + v.id + '" id="hjv_' + v.id + '"' +
           ' key-path="' + kp + '" data-url="' + u0 + '"></div>' +
-          '<div class="video-div-btn" data-id="' + v.id + '" id="video_' + v.id + '"' +
+          '<div class="video-div-btn" data-id="' + v.id + '" id="hjvb_' + v.id + '"' +
           ' key-path="' + kp + '" data-url="' + u0 + '"></div>';
         if (/<\/body>/i.test(c)) c = c.replace(/<\/body>/i, div + "</body>");
         else if (/<\/html>/i.test(c)) c = c.replace(/<\/html>/i, div + "</html>");
@@ -233,28 +285,43 @@ const KEY_TID = 2302525; // 已购买过的帖子，全站通用钥匙
     if (dec.sale && typeof dec.sale === "object") dec.sale.is_buy = true;
 
     Promise.all(vids.map((v) => fullUrl(v.id))).then((us) => {
-      let hit = 0;
+      const got = [];
       us.forEach((u, i) => {
         if (!u) return;
         const idx = dec.attachments.findIndex((x) => x && x.id === vids[i].id);
         if (idx >= 0) dec.attachments[idx].remoteUrl = u;
-        // 同步更新刚埋的 .video-div 的 data-url
-        if (typeof dec.content === "string" && dec.content.indexOf('data-id="' + vids[i].id + '"') !== -1) {
+        got.push({ id: vids[i].id, url: u, cover: vids[i].coverUrl || "" });
+        if (typeof dec.content === "string") {
           dec.content = dec.content.replace(
-            new RegExp('(<div class="video-div" data-id="' + vids[i].id + '"[^>]*data-url=")[^"]*', "g"),
+            new RegExp('(<div class="video-div[^"]*" data-id="' + vids[i].id + '"[^>]*data-url=")[^"]*', "g"),
             "$1" + u
           );
         }
-        hit++;
         LOG("附件" + vids[i].id + " → " + u.split("/").pop());
       });
 
+      /* Safari 大按钮：插在正文最前面，点了直接跳 m3u8 */
+      if (got.length && typeof dec.content === "string") {
+        const g = got[0];
+        const safe = kver(g.url).replace(/&/g, "&amp;");
+        const btn =
+          '<div style="margin:10px 0 14px;text-align:center">' +
+          '<a href="' + safe + '" target="_blank" rel="noopener" ' +
+          'style="display:inline-block;padding:13px 24px;background:#ff2d55;color:#fff;' +
+          'border-radius:26px;font-size:16px;font-weight:600;text-decoration:none">' +
+          "▶ 点击播放完整视频（Safari）</a>" +
+          '<div style="color:#888;font-size:12px;margin-top:6px">' +
+          "若页内播放器转圈，点这个用系统播放器直接播。" +
+          "</div></div>";
+        dec.content = btn + dec.content;
+      }
+
       outer.data = wrap(dec);
-      if (hit) {
-        LOG("完成 " + hit + "/" + vids.length);
-        POP("✅ 已解锁", hit + " 个视频\n原地址交给前端加 0 前缀");
+      if (got.length) {
+        LOG("完成 " + got.length + "/" + vids.length);
+        POP("✅ 已解锁", got.length + " 个视频\n顶部按钮可直接跳 Safari");
       } else {
-        LOG("没拿到完整地址，仅改文字");
+        LOG("没拿到完整地址");
       }
       $done({ body: JSON.stringify(outer) });
     });
