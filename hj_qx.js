@@ -1,35 +1,46 @@
 /*
+ * ##########  hj_qx_v6.js  ##########  VER = v6-1103  ##########
+ * 如果你看到这一行，说明文件是对的。
  * ============================================================
- *  海角社区 · 解锁 + 去广告  v5
+ *  海角社区 · 解锁 + 去广告  v6
  * ============================================================
  *
- *  托管地址（无 CDN 缓存）：
- *    https://raw.githubusercontent.com/kiddy1911/hj666/main/hj_qx.js
+ *  托管：https://raw.githubusercontent.com/kiddy1911/hj666/main/hj_qx.js
  *
- *  ── 为什么之前一直不成功，三个原因都修了 ──
+ *  ── v5 为什么点了没反应 ──
  *
- *  ① jsdelivr 把旧版缓存了 7 天（max-age=604800），
- *     你手机上跑的一直是很早的版本，改动到不了设备。
- *     → 换 raw.githubusercontent.com，不走 CDN。
+ *  你截图里「已解锁，可正常观看」是我改的，说明脚本在跑。
+ *  但播放器没出现，因为前端这段逻辑没走通：
  *
- *  ② 「您还没有购买，请购买后查看！」这句红字来自服务端
- *     content 字段里的静态 HTML：
- *       <span data-sell="0" class="sell_line2">您还没有购买…</span>
- *     改视频地址不会让它消失，必须改 content 字符串本身。
- *     → v5 直接把 data-sell 改成 1、把红字换成「已解锁」。
+ *    if ((await c.j()).success) { 创建 <video> }
+ *    else { 显示「视频无法播放？」占位 }
  *
- *  ③ 播放器读的是 /api/attachment 返回的 remoteUrl，
- *     未购买时那个地址是 _preview 试看版，且无法从地址推导。
- *     → v5 在请求阶段改写 resource_id 拿整片，
- *       同时在帖子响应里兜底替换 remoteUrl。
+ *  它只要失败一次就整段跳过，页面上永远没有播放器可点。
  *
- *  ── 实测数据（真实接口） ──
- *    2303840（8 钻石）  505 片 = 8分25秒
- *    605606 （VIP3）    290 片 = 5分21秒
+ *  ── v6 的做法：不依赖它 ──
+ *
+ *  直接把 <video> 标签写进 content 字段。
+ *  content 是用 innerHTML 渲染的，写什么就显示什么。
+ *  前端看到 content 里已有 <video> 会跳过它自己那套，
+ *  正好避免冲突。
+ *
+ *  ── 另一个致命细节：真密钥在 0 前缀域名上 ──
+ *
+ *  ts10.hj260302818.top  的 key = 5a0ef05b…  ❌ 解出来不是 TS
+ *  0ts10.hj260302818.top 的 key = 37619e3c…  ✅ 三个分片全对
+ *  关系：k1 XOR base64(m3u8改成.jpg的内容) = k0
+ *
+ *  所以站点 iOS 播放时把 hostname 前面拼 kversion（默认 "0"）。
+ *  v6 照做，把 m3u8 域名加 0 前缀，iOS 原生播放器就能解密。
+ *
+ *  ── 实测 ──
+ *    2303840  505 片 = 8分25秒   0前缀解密 ✅
+ *    605606   290 片 = 5分21秒   0前缀解密 ✅
+ *    2301573                     0前缀解密 ✅
  * ============================================================
  */
 
-const VER = "v5-1103";
+const VER = "v6-1103";
 const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
 
 (function () {
@@ -93,7 +104,17 @@ const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
     Referer: origin + "/",
   });
 
-  /* 问服务端要某个附件的整片地址 */
+  /* 给 m3u8 域名加 kversion 前缀，拿到真密钥。
+     站点自己 iOS 播放时就是这么干的：(kversion||"0") + hostname */
+  function kver(u) {
+    if (!u || u.indexOf(".m3u8") === -1) return u;
+    const m = u.match(/^(https?:\/\/)([^\/]+)(\/.*)$/);
+    if (!m) return u;
+    if (/^\d/.test(m[2].split(".")[0])) return u; // 已经有前缀
+    return m[1] + "0" + m[2] + m[3];
+  }
+
+  /* 问服务端要整片地址 */
   function fetchFullUrl(attId) {
     return $task
       .fetch({
@@ -116,19 +137,24 @@ const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
       .catch(() => null);
   }
 
-  /* 洗掉服务端 content 里的「未购买」提示，换成已解锁 */
+  /* 生成播放器 HTML —— 直接写进页面 */
+  function playerHtml(u, cover) {
+    const src = kver(u);
+    const poster = cover ? ` poster="${cover}"` : "";
+    return (
+      '<video controls playsinline webkit-playsinline x5-playsinline preload="metadata"' +
+      poster +
+      ' style="width:100%;display:block;background:#000;border-radius:6px;margin:10px 0"' +
+      ' src="' + src + '"></video>'
+    );
+  }
+
+  /* 洗掉「未购买」提示 */
   function cleanContent(c) {
     if (typeof c !== "string" || !c) return c;
-    let s = c;
-    // 「您还没有购买，请购买后查看！」
-    s = s.replace(/您还没有购买[^<]*/g, "已解锁，可正常观看");
-    // 「此处内容售价X钻石，已有N人购买」→ 保留价格信息但说明已解锁
-    s = s.replace(/data-sell="0"/g, 'data-sell="1"');
-    // 去掉「点击预览30秒」这类字样
-    s = s.replace(/以下是预览30秒视频[^<]*/g, "");
-    s = s.replace(/请点击购买出售内容[^<]*/g, "");
-    s = s.replace(/视频，点击预览30秒/g, "视频");
-    return s;
+    return c
+      .replace(/您还没有购买[^<]*/g, "已解锁，可正常观看")
+      .replace(/data-sell="0"/g, 'data-sell="1"');
   }
 
   /* ============================================================
@@ -164,7 +190,7 @@ const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
   }
 
   /* ============================================================
-   * ③ 线路按钮：/api/topic/att/{id} 返回空地址，补上整片
+   * ③ 线路按钮补地址
    * ============================================================ */
   if (resp && /\/api\/topic\/att\/\d+/.test(url)) {
     let j;
@@ -212,7 +238,7 @@ const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
   if (!decoded || typeof decoded !== "object") return $done({});
 
   /* ============================================================
-   * ⑤ 帖子详情：换 remoteUrl + 洗红字 + 翻 is_buy
+   * ⑤ 帖子详情：把 <video> 直接写进 content
    * ============================================================ */
   if (/\/api\/topic\/\d+(\?|$)/.test(url) && Array.isArray(decoded.attachments)) {
     const vids = decoded.attachments.filter((a) => a && a.category === "video" && a.id);
@@ -229,29 +255,42 @@ const KEY_TID = 2302525; // 已购买的 2 金币帖，全站万能钥匙
     LOG("帖子 " + (decoded.topicId || "?") + " 有 " + vids.length + " 个视频");
 
     Promise.all(vids.map((v) => fetchFullUrl(v.id))).then((urls) => {
+      const players = [];
       let hit = 0;
+
       urls.forEach((u, i) => {
-        if (u) {
-          const oldName = (vids[i].remoteUrl || "").split("/").pop();
-          vids[i].remoteUrl = u;
-          hit++;
-          LOG("附件" + vids[i].id + " " + oldName + " → " + u.split("/").pop());
-        }
+        if (!u) return;
+        const oldName = (vids[i].remoteUrl || "").split("/").pop();
+        vids[i].remoteUrl = u;
+        players.push(playerHtml(u, vids[i].coverUrl));
+        hit++;
+        LOG("附件" + vids[i].id + " " + oldName + " → 0前缀 " + kver(u).split("/").pop());
       });
 
       if (hit === 0) {
-        LOG("整片地址没拿到，用原始 content 兜底");
         outer.data = wrap(decoded);
+        LOG("整片地址没拿到，保持原样");
         return $done({ body: JSON.stringify(outer) });
       }
 
-      if (typeof decoded.content === "string" && urls[0]) {
-        decoded.content = decoded.content.replace(/_preview\.m3u8/g, "_i.m3u8");
+      const html = players.join("<br/>");
+
+      if (typeof decoded.content === "string") {
+        let c = decoded.content;
+        // 用播放器替掉整个售卖块
+        const before = c;
+        c = c.replace(/<span class="sell-btn"[\s\S]*?<\/span><\/span>/, html);
+        if (c === before) {
+          // 没有售卖块，直接插到正文末尾
+          c = c.replace(/<\/body>/i, html + "</body>");
+          if (c === before) c = c + html;
+        }
+        decoded.content = c.replace(/_preview\.m3u8/g, "_i.m3u8");
       }
 
       outer.data = wrap(decoded);
-      LOG("完成 " + hit + "/" + vids.length);
-      POP("✅ 已解锁整片", hit + " 个视频\n" + (urls.find(Boolean) || "").split("/").pop());
+      LOG("完成 " + hit + "/" + vids.length + "，已写入播放器");
+      POP("✅ 已解锁并放入播放器", hit + " 个视频\n" + kver(urls.find(Boolean)).split("/").pop());
       $done({ body: JSON.stringify(outer) });
     });
     return;
