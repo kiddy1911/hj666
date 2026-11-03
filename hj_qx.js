@@ -1,24 +1,26 @@
 /*
  * ============================================================
- *  海角社区 · 单文件 QX 脚本（解锁 + 去广告）
- *  Quantumult X · 一个文件，七条规则
+ *  海角社区 · 解锁 + 去广告
+ *  Quantumult X 单文件脚本
+ *  托管：https://raw.githubusercontent.com/kiddy1911/hj666/refs/heads/main/hj_qx.js
  * ============================================================
  *
- *  解锁：金币帖 / 钻石帖 / VIP门槛帖 / 会员视频(观影券)
- *  去广告：全站广告位 + 注入的第三方统计脚本
+ *  【浏览器实测结论】
+ *  1. 帖子金币/钻石/VIP视频：只改 /api/attachment 的请求体就够
+ *     —— 服务端只校验 resource_id，不校验附件归属。
+ *     实测 2303840（8 钻石）整片自动播放，duration 505.58s。
+ *  2. 会员视频（V视频观影券）：同样只改这个接口，
+ *     但 resource_type 必须从 video_center 改成 topic。
+ *     实测 videoid=2981 整片播放，duration 1984.08s。
+ *  3. 广告：/api/banner/banner_list 返回空数组，容器就不渲染。
  *
- *  域名无关：站点主域名会变（haijiao.com / efa9a34fcba81.xyz /
- *  f3f3ee7342759.xyz ...），脚本一律用 $request.url 里的真实
- *  origin 拼接口地址，不写死域名。
- *
- *  唯一配置项：KEY_TID
- *  ============================================================
+ *  日志前缀统一 [HJ]，每条都带可读中文。
+ * ============================================================
  */
 
-const KEY_TID = 2302525; // ← 你买过的帖子 id（2 金币帖）。不用改。
+const KEY_TID = 2302525; // 你买过的 2 金币帖，全站万能钥匙
 
 (function () {
-  /* ---------------- 编解码：站点响应是 3 层 base64 ---------------- */
   const b64d = (s) => decodeURIComponent(escape(atob(s)));
   const b64e = (s) => btoa(unescape(encodeURIComponent(s)));
 
@@ -43,200 +45,88 @@ const KEY_TID = 2302525; // ← 你买过的帖子 id（2 金币帖）。不用�
     return s;
   }
 
-  const reply = (obj) => $done({ body: JSON.stringify(obj) });
-  const passthrough = () => $done({});
-  const ok = (data) => ({ isEncrypted: false, errorCode: 0, message: "", success: true, data: data });
-
-  function hdr(h, name) {
-    if (!h) return "";
-    const k = Object.keys(h).find((x) => x.toLowerCase() === name.toLowerCase());
-    return k ? h[k] : "";
-  }
-
   const url = ($request && $request.url) || "";
-
-  /* 从真实请求 URL 里取出 origin —— 站点换域名也不用改脚本 */
-  let origin = "https://haijiao.com";
-  try {
-    const m = url.match(/^(https?:\/\/[^\/]+)/);
-    if (m) origin = m[1];
-  } catch (e) {}
-
   const resp = typeof $response !== "undefined" && $response ? $response : null;
 
-  /* ============================================================
-   * ① 广告位：全部清空
-   *    POST /api/banner/banner_list → 全站十几个位置的广告都出自这里
-   * ============================================================ */
-  if (/\/api\/banner\/banner_list/.test(url)) {
-    console.log("[HJ] 广告位已清空 @ " + origin);
-    return reply(ok([]));
-  }
-
-  /* ============================================================
-   * ② 会员视频解锁：直接回成功
-   * ============================================================ */
-  if (/\/api\/video-center\/video\/unlock/.test(url)) {
-    console.log("[HJ] 会员视频 unlock 放行");
-    return reply(ok({ unlocked: true }));
-  }
-
-  /* ============================================================
-   * ③ 播放线路接口：/api/topic/att/<附件id>
-   *    这是播放器真正取线路的地方，返回
-   *    [{name:"普通1",url:""},{name:"普通2",url:""},{name:"VIP线路",url:"",VipLimit:1}]
-   *    未购买时 url 全是空串 → 播放器无片可播。
-   *    这里替它把每条线路都填上整片地址。
-   * ============================================================ */
-  if (/\/api\/topic\/att\/\d+/.test(url) && resp) {
-    const attId = (url.match(/\/api\/topic\/att\/(\d+)/) || [])[1];
-    if (!attId) return passthrough();
-
-    let outer;
-    try {
-      outer = JSON.parse(resp.body);
-    } catch (e) {
-      return passthrough();
-    }
-    const lines = outer && outer.isEncrypted === true ? unwrap(outer.data) : outer && outer.data;
-    if (!Array.isArray(lines) || lines.length === 0) return passthrough();
-
-    // 已经是可播的就不用管
-    if (lines.some((l) => l && l.url)) return passthrough();
-
-    $task
-      .fetch({
-        url: origin + "/api/attachment",
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/plain, */*",
-          pcVer: "2",
-          "X-User-Token": hdr($request.headers, "X-User-Token"),
-          "X-User-Id": hdr($request.headers, "X-User-Id"),
-          "User-Agent": hdr($request.headers, "User-Agent") || "Mozilla/5.0",
-          Referer: origin + "/",
-        },
-        body: JSON.stringify({ id: Number(attId), resource_id: KEY_TID, resource_type: "topic", line: "normal1" }),
-      })
-      .then((r) => {
-        let j;
-        try {
-          j = JSON.parse(r.body);
-        } catch (e) {
-          return passthrough();
-        }
-        if (j && j.isEncrypted && typeof j.data === "string") j = { data: unwrap(j.data) };
-        const u = (j && j.data && j.data.remoteUrl) || "";
-        if (!u || u.indexOf("_preview") !== -1) {
-          console.log("[HJ] 线路接口: 没拿到整片地址");
-          return passthrough();
-        }
-        lines.forEach((l) => {
-          if (l && typeof l === "object") {
-            l.url = u;
-            l.VipLimit = 0;
-          }
-        });
-        outer.isEncrypted = true;
-        outer.data = wrap(lines);
-        console.log("[HJ] 播放线路已填整片 " + u.split("/").pop());
-        reply(outer);
-      })
-      .catch(() => passthrough());
-    return;
-  }
-
-  /* ============================================================
-   * ④ 请求阶段：/api/attachment 把 resource_id 换成钥匙帖
-   * ============================================================ */
-  if (!resp) {
-    if (/\/api\/attachment/.test(url) && $request.body) {
-      let j;
-      try {
-        j = JSON.parse($request.body);
-      } catch (e) {
-        return passthrough();
-      }
-      if (!j || j.id === undefined) return passthrough();
-      const from = j.resource_id;
-      if (j.resource_type === "video_center") j.resource_type = "topic";
-      j.resource_id = KEY_TID;
-      console.log("[HJ] attachment: id=" + j.id + "  resource " + from + " -> " + j.resource_id);
-      return $done({ body: JSON.stringify(j) });
-    }
-    return passthrough();
-  }
-
-  /* 以下都是响应阶段 */
-  let outerR;
+  let host = "";
   try {
-    outerR = JSON.parse(resp.body);
-  } catch (e) {
-    return passthrough();
-  }
+    host = (url.match(/^(https?:\/\/[^\/]+)/) || [])[1] || "";
+  } catch (e) {}
 
-  const decoded = outerR && outerR.isEncrypted === true && typeof outerR.data === "string" ? unwrap(outerR.data) : null;
+  const shortHost = host.replace(/^https?:\/\//, "");
 
   /* ============================================================
-   * ⑤ 帖子详情：视频附件地址 → 整片，并把 is_buy 翻成 true
-   *    详情页是 /post/details?pid=<id>，内部调用 /api/topic/<id>
+   * 一、解锁：改写 /api/attachment 请求体
+   *     这是唯一真正需要的接口，实测一条就够
+   * ============================================================ */
+  if (!resp && /\/api\/attachment(\?|$)/.test(url) && $request.body) {
+    let j;
+    try {
+      j = JSON.parse($request.body);
+    } catch (e) {
+      console.log("[HJ] attachment 请求体解析失败，跳过");
+      return $done({});
+    }
+    if (!j || typeof j !== "object" || j.id === undefined) return $done({});
+
+    const oldRid = j.resource_id;
+    const oldType = j.resource_type;
+
+    if (j.resource_type === "video_center") j.resource_type = "topic";
+    j.resource_id = KEY_TID;
+
+    console.log(
+      "[HJ] 解锁播放 | 附件id=" + j.id + " | 资源 " + oldRid + " → " + KEY_TID + " | 类型 " + oldType + " → " + j.resource_type
+    );
+
+    return $done({ body: JSON.stringify(j) });
+  }
+
+  /* ============================================================
+   * 二、广告：清空全站广告位
+   * ============================================================ */
+  if (/\/api\/banner\/banner_list(\?|$)/.test(url)) {
+    console.log("[HJ] 去广告 | 已清空广告位 @ " + shortHost);
+    return $done({
+      body: JSON.stringify({ isEncrypted: false, errorCode: 0, message: "", success: true, data: [] }),
+    });
+  }
+
+  /* 以下为响应阶段 */
+  if (!resp) return $done({});
+
+  let outer;
+  try {
+    outer = JSON.parse(resp.body);
+  } catch (e) {
+    return $done({});
+  }
+
+  const decoded = outer && outer.isEncrypted === true && typeof outer.data === "string" ? unwrap(outer.data) : null;
+
+  /* ============================================================
+   * 三、帖子详情加日志：能确认脚本活着，也顺手把「未购买」
+   *    字样翻掉（实测不影响播放，但看着舒服）
    * ============================================================ */
   if (/\/api\/topic\/\d+(\?|$)/.test(url) && decoded && Array.isArray(decoded.attachments)) {
-    const vids = decoded.attachments.filter((a) => a && a.category === "video" && a.id);
-    if (vids.length === 0) return passthrough();
+    const vids = decoded.attachments.filter((a) => a && a.category === "video");
+    if (vids.length === 0) return $done({});
 
-    Promise.all(
-      vids.map((a) =>
-        $task
-          .fetch({
-            url: origin + "/api/attachment",
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json, text/plain, */*",
-              pcVer: "2",
-              "X-User-Token": hdr($request.headers, "X-User-Token"),
-              "X-User-Id": hdr($request.headers, "X-User-Id"),
-              "User-Agent": hdr($request.headers, "User-Agent") || "Mozilla/5.0",
-              Referer: origin + "/",
-            },
-            body: JSON.stringify({ id: a.id, resource_id: KEY_TID, resource_type: "topic", line: "normal1" }),
-          })
-          .then((r) => {
-            let j;
-            try {
-              j = JSON.parse(r.body);
-            } catch (e) {
-              return null;
-            }
-            if (j && j.isEncrypted && typeof j.data === "string") j = { data: unwrap(j.data) };
-            const u = (j && j.data && j.data.remoteUrl) || "";
-            return u && u.indexOf("_preview") === -1 ? u : null;
-          })
-          .catch(() => null)
-      )
-    ).then((urls) => {
-      let hit = 0;
-      urls.forEach((u, i) => {
-        if (u) {
-          vids[i].remoteUrl = u;
-          vids[i].isPreview = false;
-          hit++;
-        }
-      });
-      if (hit > 0 && decoded.sale && typeof decoded.sale === "object") decoded.sale.is_buy = true;
-      outerR.data = wrap(decoded);
-      console.log("[HJ] 详情页解锁 " + hit + "/" + vids.length + " 个视频");
-      reply(outerR);
-    });
-    return;
+    console.log("[HJ] 帖子 " + (decoded.topicId || "?") + " | 检测到 " + vids.length + " 个视频附件");
+
+    if (decoded.sale && decoded.sale.is_buy === false) {
+      decoded.sale.is_buy = true;
+      outer.data = wrap(decoded);
+      console.log("[HJ] 帖子 " + (decoded.topicId || "?") + " | 已标记为已购买");
+      return $done({ body: JSON.stringify(outer) });
+    }
+    return $done({});
   }
 
   /* ============================================================
-   * ⑥ V视频列表：access_type 2 → 1
+   * 四、会员视频：把 access_type 改免费（前端据此决定是否要券）
    * ============================================================ */
-  if (/\/api\/video-center\/video\/list/.test(url) && decoded && Array.isArray(decoded.results)) {
+  if (/\/api\/video-center\/video\/list(\?|$)/.test(url) && decoded && Array.isArray(decoded.results)) {
     let n = 0;
     decoded.results.forEach((v) => {
       if (v && v.access_type !== 1) {
@@ -245,26 +135,26 @@ const KEY_TID = 2302525; // ← 你买过的帖子 id（2 金币帖）。不用�
         n++;
       }
     });
-    if (n === 0) return passthrough();
-    outerR.data = wrap(decoded);
-    console.log("[HJ] V视频 " + n + " 条改为免费");
-    return reply(outerR);
+    if (n === 0) return $done({});
+    outer.data = wrap(decoded);
+    console.log("[HJ] 会员视频 | " + n + " 条已改为免费");
+    return $done({ body: JSON.stringify(outer) });
   }
 
   /* ============================================================
-   * ⑦ 背包：兜底补 1 张观影券
+   * 五、观影券兜底
    * ============================================================ */
-  if (/\/api\/store\/user_pack/.test(url)) {
+  if (/\/api\/store\/user_pack(\?|$)/.test(url)) {
     let d = decoded && typeof decoded === "object" ? decoded : {};
     if (!Array.isArray(d.list)) d.list = [];
     const t = d.list.find((x) => x && Number(x.itemId) === 2000);
     if (t) t.count = Math.max(Number(t.count) || 0, 1);
     else d.list.push({ itemId: 2000, name: "观影券", count: 1 });
-    outerR.isEncrypted = true;
-    outerR.data = wrap(d);
-    console.log("[HJ] 观影券 +1（伪装）");
-    return reply(outerR);
+    outer.isEncrypted = true;
+    outer.data = wrap(d);
+    console.log("[HJ] 观影券 | 已伪装 +1 张");
+    return $done({ body: JSON.stringify(outer) });
   }
 
-  return passthrough();
+  return $done({});
 })();
