@@ -1,17 +1,21 @@
 /*
  * ============================================================
  *  海角社区 · 单文件 QX 脚本（解锁 + 去广告）
- *  Quantumult X · 一个文件，六条规则，全部改动都在这里
+ *  Quantumult X · 一个文件，七条规则
  * ============================================================
  *
  *  解锁：金币帖 / 钻石帖 / VIP门槛帖 / 会员视频(观影券)
- *  去广告：全站 16 个广告位 + 注入的第三方统计脚本
+ *  去广告：全站广告位 + 注入的第三方统计脚本
  *
- *  唯一的配置项：KEY_TID
+ *  域名无关：站点主域名会变（haijiao.com / efa9a34fcba81.xyz /
+ *  f3f3ee7342759.xyz ...），脚本一律用 $request.url 里的真实
+ *  origin 拼接口地址，不写死域名。
+ *
+ *  唯一配置项：KEY_TID
  *  ============================================================
  */
 
-const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金币帖即可）
+const KEY_TID = 2302525; // ← 你买过的帖子 id（2 金币帖）。不用改。
 
 (function () {
   /* ---------------- 编解码：站点响应是 3 层 base64 ---------------- */
@@ -50,18 +54,27 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
   }
 
   const url = ($request && $request.url) || "";
+
+  /* 从真实请求 URL 里取出 origin —— 站点换域名也不用改脚本 */
+  let origin = "https://haijiao.com";
+  try {
+    const m = url.match(/^(https?:\/\/[^\/]+)/);
+    if (m) origin = m[1];
+  } catch (e) {}
+
   const resp = typeof $response !== "undefined" && $response ? $response : null;
 
   /* ============================================================
-   * ① 广告位：全部清空（16 个位置的广告都走这个接口）
+   * ① 广告位：全部清空
+   *    POST /api/banner/banner_list → 全站十几个位置的广告都出自这里
    * ============================================================ */
   if (/\/api\/banner\/banner_list/.test(url)) {
-    console.log("[HJ] 广告位已清空");
+    console.log("[HJ] 广告位已清空 @ " + origin);
     return reply(ok([]));
   }
 
   /* ============================================================
-   * ② 会员视频解锁：直接回成功（备用路线，不走真接口）
+   * ② 会员视频解锁：直接回成功
    * ============================================================ */
   if (/\/api\/video-center\/video\/unlock/.test(url)) {
     console.log("[HJ] 会员视频 unlock 放行");
@@ -69,8 +82,73 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
   }
 
   /* ============================================================
-   * ③ 请求阶段：/api/attachment 把 resource_id 换成钥匙帖
-   *    服务端只校验 resource_id，不校验附件归属 —— 于是任意付费视频给整片
+   * ③ 播放线路接口：/api/topic/att/<附件id>
+   *    这是播放器真正取线路的地方，返回
+   *    [{name:"普通1",url:""},{name:"普通2",url:""},{name:"VIP线路",url:"",VipLimit:1}]
+   *    未购买时 url 全是空串 → 播放器无片可播。
+   *    这里替它把每条线路都填上整片地址。
+   * ============================================================ */
+  if (/\/api\/topic\/att\/\d+/.test(url) && resp) {
+    const attId = (url.match(/\/api\/topic\/att\/(\d+)/) || [])[1];
+    if (!attId) return passthrough();
+
+    let outer;
+    try {
+      outer = JSON.parse(resp.body);
+    } catch (e) {
+      return passthrough();
+    }
+    const lines = outer && outer.isEncrypted === true ? unwrap(outer.data) : outer && outer.data;
+    if (!Array.isArray(lines) || lines.length === 0) return passthrough();
+
+    // 已经是可播的就不用管
+    if (lines.some((l) => l && l.url)) return passthrough();
+
+    $task
+      .fetch({
+        url: origin + "/api/attachment",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/plain, */*",
+          pcVer: "2",
+          "X-User-Token": hdr($request.headers, "X-User-Token"),
+          "X-User-Id": hdr($request.headers, "X-User-Id"),
+          "User-Agent": hdr($request.headers, "User-Agent") || "Mozilla/5.0",
+          Referer: origin + "/",
+        },
+        body: JSON.stringify({ id: Number(attId), resource_id: KEY_TID, resource_type: "topic", line: "normal1" }),
+      })
+      .then((r) => {
+        let j;
+        try {
+          j = JSON.parse(r.body);
+        } catch (e) {
+          return passthrough();
+        }
+        if (j && j.isEncrypted && typeof j.data === "string") j = { data: unwrap(j.data) };
+        const u = (j && j.data && j.data.remoteUrl) || "";
+        if (!u || u.indexOf("_preview") !== -1) {
+          console.log("[HJ] 线路接口: 没拿到整片地址");
+          return passthrough();
+        }
+        lines.forEach((l) => {
+          if (l && typeof l === "object") {
+            l.url = u;
+            l.VipLimit = 0;
+          }
+        });
+        outer.isEncrypted = true;
+        outer.data = wrap(lines);
+        console.log("[HJ] 播放线路已填整片 " + u.split("/").pop());
+        reply(outer);
+      })
+      .catch(() => passthrough());
+    return;
+  }
+
+  /* ============================================================
+   * ④ 请求阶段：/api/attachment 把 resource_id 换成钥匙帖
    * ============================================================ */
   if (!resp) {
     if (/\/api\/attachment/.test(url) && $request.body) {
@@ -84,47 +162,45 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
       const from = j.resource_id;
       if (j.resource_type === "video_center") j.resource_type = "topic";
       j.resource_id = KEY_TID;
-      console.log(`[HJ] attachment: id=${j.id}  resource ${from} -> ${j.resource_id}`);
+      console.log("[HJ] attachment: id=" + j.id + "  resource " + from + " -> " + j.resource_id);
       return $done({ body: JSON.stringify(j) });
     }
     return passthrough();
   }
 
   /* 以下都是响应阶段 */
-  let outer;
+  let outerR;
   try {
-    outer = JSON.parse(resp.body);
+    outerR = JSON.parse(resp.body);
   } catch (e) {
     return passthrough();
   }
 
-  const decoded = outer && outer.isEncrypted === true && typeof outer.data === "string" ? unwrap(outer.data) : null;
+  const decoded = outerR && outerR.isEncrypted === true && typeof outerR.data === "string" ? unwrap(outerR.data) : null;
 
   /* ============================================================
-   * ④ 帖子详情：视频附件的「试看地址」→「整片地址」
-   *    覆盖 金币帖 / 钻石帖 / VIP 门槛帖
+   * ⑤ 帖子详情：视频附件地址 → 整片，并把 is_buy 翻成 true
+   *    详情页是 /post/details?pid=<id>，内部调用 /api/topic/<id>
    * ============================================================ */
   if (/\/api\/topic\/\d+(\?|$)/.test(url) && decoded && Array.isArray(decoded.attachments)) {
     const vids = decoded.attachments.filter((a) => a && a.category === "video" && a.id);
     if (vids.length === 0) return passthrough();
 
-    const headers = {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/plain, */*",
-      pcVer: "2",
-      "X-User-Token": hdr($request.headers, "X-User-Token"),
-      "X-User-Id": hdr($request.headers, "X-User-Id"),
-      "User-Agent": hdr($request.headers, "User-Agent") || "Mozilla/5.0",
-      Referer: "https://haijiao.com/",
-    };
-
     Promise.all(
       vids.map((a) =>
         $task
           .fetch({
-            url: "https://haijiao.com/api/attachment",
+            url: origin + "/api/attachment",
             method: "POST",
-            headers: headers,
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json, text/plain, */*",
+              pcVer: "2",
+              "X-User-Token": hdr($request.headers, "X-User-Token"),
+              "X-User-Id": hdr($request.headers, "X-User-Id"),
+              "User-Agent": hdr($request.headers, "User-Agent") || "Mozilla/5.0",
+              Referer: origin + "/",
+            },
             body: JSON.stringify({ id: a.id, resource_id: KEY_TID, resource_type: "topic", line: "normal1" }),
           })
           .then((r) => {
@@ -150,16 +226,15 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
         }
       });
       if (hit > 0 && decoded.sale && typeof decoded.sale === "object") decoded.sale.is_buy = true;
-      outer.data = wrap(decoded);
-      console.log(`[HJ] 解锁 ${hit}/${vids.length} 个视频附件`);
-      reply(outer);
+      outerR.data = wrap(decoded);
+      console.log("[HJ] 详情页解锁 " + hit + "/" + vids.length + " 个视频");
+      reply(outerR);
     });
     return;
   }
 
   /* ============================================================
-   * ⑤ V视频列表：access_type 2（需要观影券）→ 1（免费）
-   *    前端 openVideo 里 1===access_type 直接进播放页，连券都不用
+   * ⑥ V视频列表：access_type 2 → 1
    * ============================================================ */
   if (/\/api\/video-center\/video\/list/.test(url) && decoded && Array.isArray(decoded.results)) {
     let n = 0;
@@ -171,13 +246,13 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
       }
     });
     if (n === 0) return passthrough();
-    outer.data = wrap(decoded);
-    console.log(`[HJ] V视频 ${n} 条改为免费`);
-    return reply(outer);
+    outerR.data = wrap(decoded);
+    console.log("[HJ] V视频 " + n + " 条改为免费");
+    return reply(outerR);
   }
 
   /* ============================================================
-   * ⑥ 背包：兜底补 1 张观影券（个别页面还会读这个）
+   * ⑦ 背包：兜底补 1 张观影券
    * ============================================================ */
   if (/\/api\/store\/user_pack/.test(url)) {
     let d = decoded && typeof decoded === "object" ? decoded : {};
@@ -185,10 +260,10 @@ const KEY_TID = 2302525; // ← 改成你自己买过的一张帖子 id（2 金�
     const t = d.list.find((x) => x && Number(x.itemId) === 2000);
     if (t) t.count = Math.max(Number(t.count) || 0, 1);
     else d.list.push({ itemId: 2000, name: "观影券", count: 1 });
-    outer.isEncrypted = true;
-    outer.data = wrap(d);
+    outerR.isEncrypted = true;
+    outerR.data = wrap(d);
     console.log("[HJ] 观影券 +1（伪装）");
-    return reply(outer);
+    return reply(outerR);
   }
 
   return passthrough();
