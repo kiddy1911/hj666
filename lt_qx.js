@@ -167,9 +167,16 @@ const HOOK = [
   "var dir=dirOf(av),base=CDN+'/'+dir+'/'+av;",
   "PLC[k]=head(base+'/ts/'+av+'-0.ts').then(function(ok){",
   "if(!ok)return null;",
-  "var g=Math.round((dur||0)/6),lo=g>50?g-50:0,hi=g>0?g+50:9000;",
+  // dur 是秒。先用它把二分窗口收到 ±60，再校验窗口右界：
+  // 右界仍存在说明真实段数更多（duration 单位/精度不符），退回全量二分。
+  "var g=Math.round((dur||0)/6),lo=g>60?g-60:0,hi=g>0?g+60:9000;",
   "return cnt(base,av,lo,hi).then(function(n){",
-  "var N=n+1,D=dur||N*6,inf=(D/N).toFixed(6);",
+  "return head(base+'/ts/'+av+'-'+hi+'.ts').then(function(more){",
+  "return more?cnt(base,av,0,9000):n;});",
+  "}).then(function(n){",
+  // N=段数；总时长优先用「段数×6」实测值，dur 仅作量级校验参考
+  "var N=n+1,D=N*6,inf='6.000000';",
+  "if(dur>0&&Math.abs(dur-D)<Math.max(90,D*0.06)){D=dur;inf=(D/N).toFixed(6);}",
   "var L=['#EXTM3U','#EXT-X-VERSION:4','#EXT-X-PLAYLIST-TYPE:VOD','#EXT-X-INDEPENDENT-SEGMENTS',",
   "'#EXT-X-TARGETDURATION:'+Math.max(1,Math.ceil(D/N)),'#EXT-X-MEDIA-SEQUENCE:0',",
   "'#EXT-X-KEY:METHOD=AES-128,URI=\"/__ltk/'+av+'.bin\",IV=0x'+hex(_md5(av))];",
@@ -244,7 +251,9 @@ const HOOK = [
   "else if(has(o,'data')){",
   "var d=o.data;",
   "if(d&&d.avkey&&d.urls){",
-  "CUR={av:String(d.avkey),dur:Number(d.duration)||0,id:d.id};",
+  // duration 单位是「分钟」（实测 WAAA-705=142 → 8520s），一律换成秒
+  "var dm=Number(d.duration)||0;",
+  "CUR={av:String(d.avkey),dur:dm>0?Math.round(dm*60):0,id:d.id};",
   "window.__ltCURv=CUR;window.__ltRewrote=(window.__ltRewrote||0)+1;",
   "}",
   "if(!vip(d)&&isAd(d))o.data={};",
