@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v7-0030
+ * 版本：v7-0810
  *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
@@ -64,7 +64,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v7-0030";
+const VER = "v7-0810";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -412,17 +412,32 @@ const HOOK = [
 const CDN = "https://tez.mihmfg.com";
 // avkey 形态：字母+数字-数字，可能带尾部连字符（真实存在的 SNOS-335-）
 // 实测 23/23 apen 命中，3/3 original_videos 不误判
-const APEN_RE = /^[A-Za-z]+[0-9]*-[0-9]+-?$/;
-const dirOf = (a) => (APEN_RE.test(a) ? "apen" : "original_videos");
-const isApen = (a) => APEN_RE.test(a);
+/* 目录形态判断。
+   original_videos 的样本全是 TX/JL 前缀 + 长哈希（TX6ac384d67d504、
+   TX6ad816d9a8c83、JL63fea1d03fbc8），其余一律在 apen——
+   包括 FJIN-159-CN 这种带国别后缀、SNOS-335- 这种尾部连字符的。
+   判错只是首次播放多一轮 HEAD，结果会缓存纠正，不会一直错。 */
+const ORIG_RE = /^(?:TX|JL)[0-9a-f]{8,}$/i;
+const dirOf = (a) => (ORIG_RE.test(a) ? "original_videos" : "apen");
+const isApen = (a) => !ORIG_RE.test(a);
 // 兜底：目录判错时换另一个再试（seg0 HEAD 一次，代价很小）
-function probeDir(av) {
-  const d = dirOf(av), other = d === "apen" ? "original_videos" : "apen";
-  const base = (x) => CDN + "/" + x + "/" + av + "/ts/" + av + "-0.ts";
-  return qxFetch(base(d), "HEAD").then((r) => {
-    if (r.ok || r.status === 206) return d;
-    return qxFetch(base(other), "HEAD").then((r2) => (r2.ok || r2.status === 206 ? other : d));
-  });
+/* 目录探测：两个目录并行 HEAD，apen 优先。
+   串行要两轮（各约 1 秒），并行只花一轮。结果缓存，之后不再探测。 */
+function pdGet(av) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+      const v = $prefs.valueForKey("lt_pd_" + av);
+      return v === "apen" || v === "original_videos" ? v : "";
+    }
+  } catch (e) {}
+  return "";
+}
+function pdSet(av, d) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.setValueForKey) {
+      $prefs.setValueForKey(d, "lt_pd_" + av);
+    }
+  } catch (e) {}
 }
 
 /* 片长缓存：avkey → 分钟 */
@@ -440,6 +455,27 @@ function dmSet(av, dm) {
   try {
     if (typeof $prefs !== "undefined" && $prefs.setValueForKey) {
       $prefs.setValueForKey(String(dm), "lt_dm_" + av);
+    }
+  } catch (e) {}
+}
+
+/* 分段时长：站点各片不一样（6.000000 或 6.006000），
+   写死会让长片累计偏差（1246 段差 7 秒，拖动对时偏）。
+   从站点自己的试看列表 EXTINF 读出真实值缓存起来。 */
+function sdGet(av) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+      const n = parseFloat($prefs.valueForKey("lt_sd_" + av));
+      return isNaN(n) || n <= 0 ? 0 : n;
+    }
+  } catch (e) {}
+  return 0;
+}
+function sdSet(av, sd) {
+  if (!av || !sd || sd <= 0) return;
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.setValueForKey) {
+      $prefs.setValueForKey(String(sd), "lt_sd_" + av);
     }
   } catch (e) {}
 }
@@ -463,7 +499,26 @@ function qxFetch(url, method) {
 }
 
 /* 段数：g-2..g-12 并行探 11 点，取最大存在段号 +1 */
+function scGet(av) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+      const n = parseInt($prefs.valueForKey("lt_sc_" + av), 10);
+      return isNaN(n) || n <= 0 ? 0 : n;
+    }
+  } catch (e) {}
+  return 0;
+}
+function scSet(av, n) {
+  if (!av || !n || n <= 0) return;
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.setValueForKey) {
+      $prefs.setValueForKey(String(n), "lt_sc_" + av);
+    }
+  } catch (e) {}
+}
 function segCount(av, dm, dir) {
+  const cached = scGet(av);
+  if (cached) return Promise.resolve(cached);
   const base = CDN + "/" + (dir || dirOf(av)) + "/" + av + "/ts/" + av + "-";
   const g = Math.round(dm * 10);
   if (!g || g < 10) {
@@ -474,7 +529,10 @@ function segCount(av, dm, dir) {
       const m = Math.ceil((lo + hi) / 2);
       return probe(m).then((ok) => (ok ? bs(m, hi) : bs(lo, m - 1)));
     };
-    return probe(0).then((h0) => (h0 ? bs(0, 3000) : Promise.resolve(-1)));
+    return probe(0).then((h0) => (h0 ? bs(0, 3000) : Promise.resolve(-1))).then((n) => {
+      if (n > 0) scSet(av, n);
+      return n;
+    });
   }
   const cand = [];
   for (let k = 2; k <= 12; k++) if (g - k > 0) cand.push(g - k);
@@ -484,7 +542,9 @@ function segCount(av, dm, dir) {
       const ok = rs[i].ok || rs[i].status === 206;
       if (ok && cand[i] > best) best = cand[i];
     }
-    return best < 0 ? -1 : best + 1;
+    const n = best < 0 ? -1 : best + 1;
+    if (n > 0) scSet(av, n);
+    return n;
   });
 }
 
@@ -505,9 +565,19 @@ function uriOfKeyLine(line) {
 /* 生成完整片播放列表
    ivHint：站点明文列表里的 IV（original_videos 必需） */
 function buildList(av, dm, ivHint, uriHint) {
-  return probeDir(av).then((dir) => {
+  // 目录不单独探测，直接用形态猜一个跑段数探测；失败再换另一个。
+  // 这样冷启动只花一轮 HEAD（11 个并行），而不是探测目录 + 段数两轮。
+  const guess = pdGet(av) || dirOf(av);
+  const other = guess === "apen" ? "original_videos" : "apen";
+  const attempt = (dir) => segCount(av, dm, dir).then((N) => {
+    if (N > 0) { pdSet(av, dir); return { dir, N }; }
+    return null;
+  });
+  return attempt(guess).then((r) => (r ? r : attempt(other))).then((hit) => {
+    if (!hit) return null;
+    const dir = hit.dir, N = hit.N;
   const base = CDN + "/" + dir + "/" + av;
-  return segCount(av, dm, dir).then((N) => {
+  return Promise.resolve().then(() => {
     if (N <= 0) return null;
     let ivHex = ivHint || "";
     if (!ivHex) {
@@ -515,22 +585,26 @@ function buildList(av, dm, ivHint, uriHint) {
       else return null;           // original_videos 无 IV 无法构造
     }
     const keyUri = uriHint || (base + "/key.php");
-    const total = N * 6;
+    // 每段时长取缓存到的真实值。实测平均每段 6.0062 秒（解 PTS 量 50 段得出），
+    // 用 6.000 会让 1418 段累计偏 8.8 秒，拖动时预览帧对不齐。
+    const sd = sdGet(av) || 6.006;
+    const sdtxt = sd.toFixed(6);
+    const total = Math.round(N * sd);
     const L = [
       "#EXTM3U",
-      // 与站点原生列表对齐：站点发的是 VERSION:4 + PLAYLIST-TYPE:VOD
-      // + INDEPENDENT-SEGMENTS + TARGETDURATION:6。
-      // 之前删掉 INDEPENDENT-SEGMENTS 是误判——原生列表本来就带它，
-      // 播放器对它有预期；缺了反而让 seek 行为偏离站点基线。
+      // 与站点原生列表对齐：VERSION:4 + PLAYLIST-TYPE:VOD
+      // + INDEPENDENT-SEGMENTS + TARGETDURATION。
+      // 站点原生列表确实带 INDEPENDENT-SEGMENTS，删掉反而偏离基线。
       "#EXT-X-VERSION:4",
       "#EXT-X-PLAYLIST-TYPE:VOD",
       "#EXT-X-INDEPENDENT-SEGMENTS",
-      "#EXT-X-TARGETDURATION:6",
+      // TARGETDURATION 必须 >= 最大 EXTINF 四舍五入，6.006 时取 7 才合规
+      "#EXT-X-TARGETDURATION:" + Math.max(1, Math.ceil(sd)),
       "#EXT-X-MEDIA-SEQUENCE:0",
       '#EXT-X-KEY:METHOD=AES-128,URI="' + keyUri + '",IV=0x' + ivHex,
     ];
     for (let i = 0; i < N; i++) {
-      L.push("#EXTINF:6.000000,");
+      L.push("#EXTINF:" + sdtxt + ",");
       L.push(base + "/ts/" + av + "-" + i + ".ts");
     }
     L.push("#EXT-X-ENDLIST");
@@ -642,28 +716,85 @@ function main() {
     const hasFull = /"low"\s*:\s*"[^"]+"|"high"\s*:\s*"[^"]+"/.test(plain);
     const hasIntro = /"intro"\s*:\s*"[^"]+"/.test(plain);
     if (!av || !hasIntro || hasFull) return $done({});
-    // VIP 片：只有 intro（11 段试看）→ 换成完整片源
+    // VIP 片：只有 intro（11 段试看）→ 换成完整片源。
+    // 三个字段全填同一个地址，不只是为了播放：
+    //   播放器 videoSrcCount = Object.values(urls).filter(Boolean).length，
+    //   等于 1 时进度条缩略图只用 previewList[6] 单张雪碧图（100 格 ≈ 62 秒，
+    //   对应试看长度）。换成 142 分钟完整版后这 100 格被摊到 8520 秒，
+    //   一格覆盖 85 秒，拖动时预览画面完全对不上。
+    //   填满三个字段让 count 变 3，播放器改用 urlArray 整组雪碧图
+    //   （86 张 × 100 格 × 约 1 秒，正好覆盖全长），预览才对得准。
     const u = "/__lt/" + av + ".m3u8?dm=" + dm;
-    let np = plain.replace(/("intro"\s*:\s*)"[^"]*"/, '$1"' + u + '"');
+    // 只在 urls 对象内部替换，避免误伤标题里出现的同名字段
+    const ui = plain.indexOf('"urls"');
+    if (ui < 0) return $done({});
+    const lb = plain.indexOf("{", ui);
+    if (lb < 0) return $done({});
+    let depth = 0, rb = -1;
+    for (let i = lb; i < plain.length; i++) {
+      const c = plain.charAt(i);
+      if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) { rb = i; break; } }
+    }
+    if (rb < 0) return $done({});
+    const head = plain.slice(0, lb + 1);
+    const mid = plain.slice(lb + 1, rb);
+    const tail = plain.slice(rb);
+    const newMid = mid
+      .replace(/("low"\s*:\s*)"[^"]*"/, '$1"' + u + '"')
+      .replace(/("high"\s*:\s*)"[^"]*"/, '$1"' + u + '"')
+      .replace(/("intro"\s*:\s*)"[^"]*"/, '$1"' + u + '"');
+    const np = head + newMid + tail;
     if (np === plain) return $done({});
-    const key = API_KEY;
-    const iv = utf8bytes(md5hex(vtag).slice(8, 24));
-    const enc = cbcEncBytes(key, iv, utf8bytes(np));
-    let bin = "";
-    for (let i = 0; i < enc.length; i++) bin += String.fromCharCode(enc[i]);
-    const out = b64encode(bin);
-    if (typeof $notify === "function") {
-      $notify("Lutube " + VER, "已接管 " + av, "试看 → 完整片源");
+    // 响应体长度变了，content-length 必须重算，否则会被截断
+    const finish = () => {
+      const key = API_KEY;
+      const iv = utf8bytes(md5hex(vtag).slice(8, 24));
+      // 注意：apiDecode 返回的是 byte string（每个 char 就是一个原始字节，
+      // 0-255）。这里绝不能再用 utf8bytes——那会把所有高位字节二次编码，
+      // 日文/中文标题直接变乱码。逐字节取 charCode 才是无损的。
+      const bytesOf = (str) => {
+        const b = [];
+        for (let i = 0; i < str.length; i++) b.push(str.charCodeAt(i) & 255);
+        return b;
+      };
+      const enc = cbcEncBytes(key, iv, bytesOf(np));
+      let bin = "";
+      for (let i = 0; i < enc.length; i++) bin += String.fromCharCode(enc[i]);
+      const out = b64encode(bin);
+      if (typeof $notify === "function") {
+        $notify("Lutube " + VER, "已接管 " + av, "试看 → 完整片源");
+      }
+      const hdr = {};
+      const src = $response.headers || {};
+      for (const k in src) {
+        const lk = String(k).toLowerCase();
+        if (lk === "content-length" || lk === "content-encoding") continue;
+        hdr[k] = src[k];
+      }
+      return $done({ status: 200, headers: hdr, body: out });
+    };
+
+    // 顺手抓站点试看列表的真实 EXTINF 缓存起来。
+    // 各片分段时长不一样（6.000000 / 6.006000），写死会让长片累计偏几秒，
+    // 拖动时预览帧就对不齐。首播多花一次小请求（约 8KB），之后走缓存。
+    if (!sdGet(av)) {
+      try {
+        const tk = (($request.headers && ($request.headers["Authorization"] ||
+          $request.headers["authorization"])) || "").replace(/^Bearer\s+/i, "");
+        const oi = (plain.match(/"intro"\s*:\s*"([^"]+)"/) || [])[1];
+        const origin = String(url).replace(/^([a-z]+:\/\/[^\/]+).*$/i, "$1").replace(/\/\/pwc-aws\./, "//web-aws.");
+        if (oi && tk) {
+          const pu = origin + oi + (oi.indexOf("?") >= 0 ? "&" : "?") + "token=" + tk;
+          return qxFetch(pu).then((rr) => {
+            const m2 = String(rr.text || "").match(/#EXTINF:([\d.]+)/);
+            if (m2) sdSet(av, parseFloat(m2[1]));
+            return finish();
+          }).catch(() => finish());
+        }
+      } catch (e) {}
     }
-    // 长度变了，content-length 必须重算，否则响应会被截断
-    const hdr = {};
-    const src = $response.headers || {};
-    for (const k in src) {
-      const lk = String(k).toLowerCase();
-      if (lk === "content-length" || lk === "content-encoding") continue;
-      hdr[k] = src[k];
-    }
-    return $done({ status: 200, headers: hdr, body: out });
+    return finish();
   }
 
   /* ---- ④ HTML 外壳 ---- */
