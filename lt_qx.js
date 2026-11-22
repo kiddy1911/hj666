@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v6-2310
+ * 版本：v7-0030
  *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
@@ -18,7 +18,9 @@
  *
  *   ② QX 发流
  *      /__lt/<avkey>.m3u8?dm=N → 拼装完整片列表
- *      /l2media/*.m3u8          → 拦截站点自己的列表，就地换成完整片
+ *      /l2media/*.m3u8          → 兜底（站点列表有效期短，常 404）
+ *      /api/v3/long/info/:id    → 主力：直接把 urls.intro 改成 /__lt/
+ *                                 响应是 AES-256-CBC 密文，改完重新加密
  *
  *   ③ QX 只读缓存（不解密回写，响应原样放行）
  *      MITM pwc-aws 的 long-info 接口，用纯 JS 解出 avkey + duration
@@ -62,7 +64,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v6-2310";
+const VER = "v7-0030";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -173,6 +175,48 @@ function cbcDecBytes(key, iv, ct) {
   }
   return out;
 }
+/* AES 加密方向：long/info 响应是 AES-256-CBC 密文，
+   要在 QX 里改 urls 就必须能重新加密回去。 */
+function encBlock(K, blk) {
+  // K 是 expandKey 返回的 {w, Nr}，不是数组
+  const w = K.w, Nr = K.Nr;
+  const s = blk.slice(0, 16);
+  for (let i = 0; i < 16; i++) s[i] ^= w[i];
+  for (let r = 1; r <= Nr; r++) {
+    for (let i = 0; i < 16; i++) s[i] = SBOX[s[i]];
+    // ShiftRows
+    const t = s.slice();
+    s[0] = t[0]; s[1] = t[5]; s[2] = t[10]; s[3] = t[15];
+    s[4] = t[4]; s[5] = t[9]; s[6] = t[14]; s[7] = t[3];
+    s[8] = t[8]; s[9] = t[13]; s[10] = t[2]; s[11] = t[7];
+    s[12] = t[12]; s[13] = t[1]; s[14] = t[6]; s[15] = t[11];
+    if (r !== Nr) {
+      for (let i = 0; i < 16; i += 4) {
+        const a0 = s[i], a1 = s[i + 1], a2 = s[i + 2], a3 = s[i + 3];
+        s[i]     = xtime(a0) ^ (xtime(a1) ^ a1) ^ a2 ^ a3;
+        s[i + 1] = a0 ^ xtime(a1) ^ (xtime(a2) ^ a2) ^ a3;
+        s[i + 2] = a0 ^ a1 ^ xtime(a2) ^ (xtime(a3) ^ a3);
+        s[i + 3] = (xtime(a0) ^ a0) ^ a1 ^ a2 ^ xtime(a3);
+      }
+    }
+    for (let i = 0; i < 16; i++) s[i] ^= w[r * 16 + i];
+  }
+  return s;
+}
+function cbcEncBytes(key, iv, pt) {
+  const K = expandKey(key), out = [];
+  let prev = iv.slice(0, 16);
+  const n = 16 - (pt.length % 16);
+  const buf = pt.concat(new Array(n).fill(n));   // PKCS#7
+  for (let off = 0; off < buf.length; off += 16) {
+    const blk = buf.slice(off, off + 16);
+    for (let j = 0; j < 16; j++) blk[j] ^= prev[j];
+    const enc = encBlock(K, blk);
+    for (let j = 0; j < 16; j++) out.push(enc[j]);
+    prev = enc;
+  }
+  return out;
+}
 const utf8bytes = (s) => {
   const b = [];
   for (let i = 0; i < s.length; i++) {
@@ -198,6 +242,20 @@ function b64decode(str) {
   return out;
 }
 const API_KEY = utf8bytes("322b63a3be0567ae7cae7a2f368ee38a");
+const B64C = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function b64encode(bin) {
+  let out = "";
+  for (let i = 0; i < bin.length; i += 3) {
+    const a = bin.charCodeAt(i) & 255;
+    const b = i + 1 < bin.length ? bin.charCodeAt(i + 1) & 255 : 0;
+    const c = i + 2 < bin.length ? bin.charCodeAt(i + 2) & 255 : 0;
+    out += B64C.charAt(a >> 2);
+    out += B64C.charAt(((a & 3) << 4) | (b >> 4));
+    out += i + 1 < bin.length ? B64C.charAt(((b & 15) << 2) | (c >> 6)) : "=";
+    out += i + 2 < bin.length ? B64C.charAt(c & 63) : "=";
+  }
+  return out;
+}
 const apiIv = (vtag) => utf8bytes(md5hex(String(vtag)).slice(8, 24));
 
 /* 解出 long/info 明文；失败返回 null */
@@ -300,11 +358,21 @@ const HOOK = [
   "var a=String(d.avkey);",
   "if(!/^[A-Za-z0-9_.-]+$/.test(a))return false;",
   "var dm=Number(d.duration)||0;",
-  "var apen=/^[A-Za-z]+[0-9]*-[0-9]+-?$/.test(a);",
+  // 判目录不能看 avkey 形态：FJIN-159-CN 形似 apen，实际也在 apen；
+  // 形似 original_videos 的也可能在 apen。唯一可靠判据是 CDN 上哪个目录存在。
   "var u0='/__lt/'+a+'.m3u8?dm='+dm;",
-  "if(apen){d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;return true;}",
-  // original_videos：先指向占位，异步推 IV 后替换
+  "function head(u){return fetch(u,{method:'HEAD'}).then(function(r){return r.status;}).catch(function(){return 0;});}",
+  "function dirOf(av,cb){",
+  "var b=CDN+'/apen/'+av+'/ts/'+av+'-0.ts';",
+  "head(b).then(function(st){",
+  "if(st===200||st===206)return cb('apen');",
+  "head(CDN+'/original_videos/'+av+'/ts/'+av+'-0.ts').then(function(st2){",
+  "cb((st2===200||st2===206)?'original_videos':'apen');",
+  "});});}",
   "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.__lt=1;window.__ltAV=a;return true;}",
+  "dirOf(a,function(dir){",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;return;}",
+  // original_videos：先指向占位，异步推 IV 后替换
   "deriveIV(a,'original_videos',function(ivh){",
   "if(!ivh)return;",
   "var u=u0+'&iv='+ivh;API[a]=u;",
@@ -321,6 +389,7 @@ const HOOK = [
   "},500);",
   "});",
   "d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;",
+  "});",
   "return true;}",
   "JSON.parse=function(s,rev){",
   "var o=_p(s,rev);",
@@ -449,10 +518,14 @@ function buildList(av, dm, ivHint, uriHint) {
     const total = N * 6;
     const L = [
       "#EXTM3U",
-      "#EXT-X-VERSION:3",
+      // 与站点原生列表对齐：站点发的是 VERSION:4 + PLAYLIST-TYPE:VOD
+      // + INDEPENDENT-SEGMENTS + TARGETDURATION:6。
+      // 之前删掉 INDEPENDENT-SEGMENTS 是误判——原生列表本来就带它，
+      // 播放器对它有预期；缺了反而让 seek 行为偏离站点基线。
+      "#EXT-X-VERSION:4",
       "#EXT-X-PLAYLIST-TYPE:VOD",
       "#EXT-X-INDEPENDENT-SEGMENTS",
-      "#EXT-X-TARGETDURATION:7",
+      "#EXT-X-TARGETDURATION:6",
       "#EXT-X-MEDIA-SEQUENCE:0",
       '#EXT-X-KEY:METHOD=AES-128,URI="' + keyUri + '",IV=0x' + ivHex,
     ];
@@ -552,19 +625,45 @@ function main() {
     });
   }
 
-  /* ---- ③ long/info 只读缓存（响应原样放行） ----
-     只解 avkey + duration 存起来，供 original_videos 定段数。 */
+  /* ---- ③ long/info 改写 urls（主力路径，不依赖页面 hook） ----
+     真机走原生 HLS，页面 hook 拦不到 m3u8 请求。
+     所以在这里把 urls 直接改成 /__lt/，播放器读到的就是完整片源。
+     响应是 AES-256-CBC 密文，改完必须原样加密回去。 */
   if (/\/api\/v3\/long\/info\//.test(url) && body) {
     const vtag = ($response.headers && ($response.headers["x-vtag"] || $response.headers["X-Vtag"])) || "";
     const plain = apiDecode(body, vtag);
-    if (plain) {
-      // avkey 与 duration 各自独立取，不依赖字段顺序与距离
-      const ma = plain.match(/"avkey"\s*:\s*"([^"]+)"/);
-      const md = plain.match(/"duration"\s*:\s*(\d+)/);
-      if (ma && md) dmSet(ma[1], Number(md[1]));
-      else if (ma) dmSet(ma[1], 0);
+    if (!plain) return $done({});
+    const ma = plain.match(/"avkey"\s*:\s*"([^"]+)"/);
+    const md = plain.match(/"duration"\s*:\s*(\d+)/);
+    const av = ma ? ma[1] : "";
+    const dm = md ? Number(md[1]) : 0;
+    if (av) dmSet(av, dm);
+    // 已经是完整片源（low/high 有值）就别动，站点给的就是全长
+    const hasFull = /"low"\s*:\s*"[^"]+"|"high"\s*:\s*"[^"]+"/.test(plain);
+    const hasIntro = /"intro"\s*:\s*"[^"]+"/.test(plain);
+    if (!av || !hasIntro || hasFull) return $done({});
+    // VIP 片：只有 intro（11 段试看）→ 换成完整片源
+    const u = "/__lt/" + av + ".m3u8?dm=" + dm;
+    let np = plain.replace(/("intro"\s*:\s*)"[^"]*"/, '$1"' + u + '"');
+    if (np === plain) return $done({});
+    const key = API_KEY;
+    const iv = utf8bytes(md5hex(vtag).slice(8, 24));
+    const enc = cbcEncBytes(key, iv, utf8bytes(np));
+    let bin = "";
+    for (let i = 0; i < enc.length; i++) bin += String.fromCharCode(enc[i]);
+    const out = b64encode(bin);
+    if (typeof $notify === "function") {
+      $notify("Lutube " + VER, "已接管 " + av, "试看 → 完整片源");
     }
-    return $done({});
+    // 长度变了，content-length 必须重算，否则响应会被截断
+    const hdr = {};
+    const src = $response.headers || {};
+    for (const k in src) {
+      const lk = String(k).toLowerCase();
+      if (lk === "content-length" || lk === "content-encoding") continue;
+      hdr[k] = src[k];
+    }
+    return $done({ status: 200, headers: hdr, body: out });
   }
 
   /* ---- ④ HTML 外壳 ---- */
@@ -585,5 +684,6 @@ if (typeof $done === "function") main();
 /* Node 调试 */
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { clean, VER, HOOK, buildList, segCount, md5hex, md5bytes, dirOf,
-    keyLineOf, ivOfKeyLine, uriOfKeyLine, apiDecode, cbcDecBytes, utf8bytes, b64decode };
+    keyLineOf, ivOfKeyLine, uriOfKeyLine, apiDecode, cbcDecBytes, cbcEncBytes,
+    utf8bytes, b64decode, b64encode, API_KEY };
 }
