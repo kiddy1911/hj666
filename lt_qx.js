@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v5-2318
+ * 版本：v6-2310
  *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
@@ -27,8 +27,9 @@
  * ══ IV 规则（踩过的坑） ════════════════════════════════════════
  *   apen 类（avkey 形如 WAAA-705 / KIN8-3717）：
  *     IV = md5(avkey) 的 32 位 hex，可直接算。
- *   original_videos 类（avkey 形如 TX6ad816d9a8c83）：
- *     IV ≠ md5(avkey)，无法从 avkey 推出。
+ *   original_videos 类（avkey 形如 TX6ad816d9a8c83 / TX6ac384d67d504）：
+ *     IV ≠ md5(avkey)，无法从 avkey 推出。由页面钩子现场算：
+ *     IV = AES-128-ECB-Dec(key, C0) XOR P0，算好后拼进 /__lt/ 的 iv= 参数。
  *     唯一可靠来源是站点下发的明文列表里的 EXT-X-KEY 行。
  *     实测 TX6ad816d9a8c83 的 IV 是 0f17351643fb47db1b8d7361699da97a，
  *     而 md5(avkey) 是 d2464153c242cdd03c6dc89ed21c68dc，完全不同。
@@ -61,7 +62,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v5-2318";
+const VER = "v6-2310";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -256,15 +257,70 @@ const HOOK = [
   "if(r.share&&typeof r.share==='object'){r.share.play_popup_interval=0;r.share.days=0;}",
   "if(r.statsig&&typeof r.statsig==='object')r.statsig.track=false;",
   "return true;}",
-  // 只有 apen 类（V-数字）能直接算 IV，才指向虚拟列表；
-  // original_videos 类必须留给 /l2media/ 分支，那里才能读到站点下发的 IV
+  // IV 推导：original_videos 类的 IV 不等于 md5(avkey)，必须现场算
+  // IV = AES-128-ECB-Dec(key, C0) XOR P0，key=C0 都从 CDN 取
+  // 算出后把 iv 拼进 /__lt/ 的 query，QX 只读文本不碰二进制
+  "var P0=[0x47,0x40,0x00,0x10,0x00,0x00,0xb0,0x0d,0x00,0x01,0xc1,0x00,0x00,0x00,0x01,0xe1];",
+  "var SB=[0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16];",
+  "var IV=[],i0;for(i0=0;i0<256;i0++)IV[SB[i0]]=i0;",
+  "var XT=function(a){return ((a<<1)^((a&0x80)?0x1b:0))&255;};",
+  "var GM=function(a,b){var r=0;while(b){if(b&1)r^=a;a=XT(a);b>>=1;}return r&255;};",
+  "function d1(k,inp){",
+  "var w=[],i,r,t,a;for(i=0;i<16;i++)w[i]=k[i];var rc=1;",
+  "for(i=16;i<176;i+=4){a=w[i-4];var b=w[i-3],c=w[i-2],d=w[i-1];",
+  "if(i%16===0){t=[SB[b]^rc,SB[c],SB[d],SB[a]];rc=XT(rc);}else t=[a,b,c,d];",
+  "w[i]=w[i-16]^t[0];w[i+1]=w[i-15]^t[1];w[i+2]=w[i-14]^t[2];w[i+3]=w[i-13]^t[3];}",
+  "var s=inp.slice(0,16);for(i=0;i<16;i++)s[i]^=w[160+i];",
+  "for(r=9;r>=0;r--){t=s.slice();",
+  "s[0]=t[0];s[1]=t[13];s[2]=t[10];s[3]=t[7];s[4]=t[4];s[5]=t[1];s[6]=t[14];s[7]=t[11];",
+  "s[8]=t[8];s[9]=t[5];s[10]=t[2];s[11]=t[15];s[12]=t[12];s[13]=t[9];s[14]=t[6];s[15]=t[3];",
+  "for(i=0;i<16;i++)s[i]=IV[s[i]];for(i=0;i<16;i++)s[i]^=w[r*16+i];",
+  "if(r>0)for(i=0;i<16;i+=4){a=[s[i],s[i+1],s[i+2],s[i+3]];",
+  "s[i]=GM(a[0],14)^GM(a[1],11)^GM(a[2],13)^GM(a[3],9);",
+  "s[i+1]=GM(a[0],9)^GM(a[1],14)^GM(a[2],11)^GM(a[3],13);",
+  "s[i+2]=GM(a[0],13)^GM(a[1],9)^GM(a[2],14)^GM(a[3],11);",
+  "s[i+3]=GM(a[0],11)^GM(a[1],13)^GM(a[2],9)^GM(a[3],14);}}",
+  "return s;}",
+  "var CDN='https://tez.mihmfg.com';",
+  "var API={};",
+  "function hex(a){var o='',i;for(i=0;i<a.length;i++){var v=a[i].toString(16);o+=(v.length<2?'0':'')+v;}return o;}",
+  // 拉 key + C0，推 IV，回调
+  "function deriveIV(av,dir,cb){",
+  "var base=CDN+'/'+dir+'/'+av;",
+  "var f1=fetch(base+'/key.php').then(function(r){return r.arrayBuffer();}).then(function(b){return new Uint8Array(b);});",
+  "var f2=fetch(base+'/ts/'+av+'-0.ts',{headers:{Range:'bytes=0-15'}}).then(function(r){return r.arrayBuffer();}).then(function(b){return new Uint8Array(b).slice(0,16);});",
+  "Promise.all([f1,f2]).then(function(v){",
+  "try{var k=v[0],c0=v[1];if(k.length<16||c0.length<16){cb('');return;}",
+  "var dec=d1(k,c0),iv=new Uint8Array(16),i;",
+  "for(i=0;i<16;i++)iv[i]=dec[i]^P0[i];",
+  "cb(hex(iv));}catch(e){cb('');}",
+  "}).catch(function(){cb('');});}",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
-  "if(!/^[A-Za-z0-9]+-[0-9]+$/.test(a))return false;",
-  "var u='/__lt/'+a+'.m3u8?dm='+(Number(d.duration)||0);",
-  "d.urls.low=u;d.urls.high=u;d.__lt=1;",
-  "window.__ltAV=a;",
+  "if(!/^[A-Za-z0-9_.-]+$/.test(a))return false;",
+  "var dm=Number(d.duration)||0;",
+  "var apen=/^[A-Za-z]+[0-9]*-[0-9]+-?$/.test(a);",
+  "var u0='/__lt/'+a+'.m3u8?dm='+dm;",
+  "if(apen){d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;return true;}",
+  // original_videos：先指向占位，异步推 IV 后替换
+  "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.__lt=1;window.__ltAV=a;return true;}",
+  "deriveIV(a,'original_videos',function(ivh){",
+  "if(!ivh)return;",
+  "var u=u0+'&iv='+ivh;API[a]=u;",
+  "if(d.urls){d.urls.low=u;d.urls.high=u;d.__lt=1;}",
+  // 播放器可能已经拿着 no-iv 的地址起播了。
+  // iOS 原生 HLS 下 video.src 就是 m3u8 地址，直接换成带 iv 的即可。
+  "var tries=0;",
+  "var fix=setInterval(function(){",
+  "tries++;",
+  "var vs=document.querySelectorAll('video');",
+  "for(var i=0;i<vs.length;i++){var v=vs[i];var cur=v.currentSrc||v.src||'';",
+  "if(cur.indexOf('/__lt/'+a+'.m3u8')>=0&&cur.indexOf('iv=')<0){v.src=u;try{v.load();v.play();}catch(e){}}}",
+  "if(tries>20)clearInterval(fix);",
+  "},500);",
+  "});",
+  "d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;",
   "return true;}",
   "JSON.parse=function(s,rev){",
   "var o=_p(s,rev);",
@@ -285,8 +341,20 @@ const HOOK = [
  *  完整片源
  * ============================================================ */
 const CDN = "https://tez.mihmfg.com";
-const dirOf = (a) => (/^[A-Za-z0-9]+-[0-9]+$/.test(a) ? "apen" : "original_videos");
-const isApen = (a) => /^[A-Za-z0-9]+-[0-9]+$/.test(a);
+// avkey 形态：字母+数字-数字，可能带尾部连字符（真实存在的 SNOS-335-）
+// 实测 23/23 apen 命中，3/3 original_videos 不误判
+const APEN_RE = /^[A-Za-z]+[0-9]*-[0-9]+-?$/;
+const dirOf = (a) => (APEN_RE.test(a) ? "apen" : "original_videos");
+const isApen = (a) => APEN_RE.test(a);
+// 兜底：目录判错时换另一个再试（seg0 HEAD 一次，代价很小）
+function probeDir(av) {
+  const d = dirOf(av), other = d === "apen" ? "original_videos" : "apen";
+  const base = (x) => CDN + "/" + x + "/" + av + "/ts/" + av + "-0.ts";
+  return qxFetch(base(d), "HEAD").then((r) => {
+    if (r.ok || r.status === 206) return d;
+    return qxFetch(base(other), "HEAD").then((r2) => (r2.ok || r2.status === 206 ? other : d));
+  });
+}
 
 /* 片长缓存：avkey → 分钟 */
 function dmGet(av) {
@@ -326,8 +394,8 @@ function qxFetch(url, method) {
 }
 
 /* 段数：g-2..g-12 并行探 11 点，取最大存在段号 +1 */
-function segCount(av, dm) {
-  const base = CDN + "/" + dirOf(av) + "/" + av + "/ts/" + av + "-";
+function segCount(av, dm, dir) {
+  const base = CDN + "/" + (dir || dirOf(av)) + "/" + av + "/ts/" + av + "-";
   const g = Math.round(dm * 10);
   if (!g || g < 10) {
     // 无片长：0..3000 二分（慢，仅兜底）
@@ -368,13 +436,13 @@ function uriOfKeyLine(line) {
 /* 生成完整片播放列表
    ivHint：站点明文列表里的 IV（original_videos 必需） */
 function buildList(av, dm, ivHint, uriHint) {
-  const dir = dirOf(av);
+  return probeDir(av).then((dir) => {
   const base = CDN + "/" + dir + "/" + av;
-  return segCount(av, dm).then((N) => {
+  return segCount(av, dm, dir).then((N) => {
     if (N <= 0) return null;
     let ivHex = ivHint || "";
     if (!ivHex) {
-      if (isApen(av)) ivHex = md5hex(av);
+      if (dir === "apen") ivHex = md5hex(av);
       else return null;           // original_videos 无 IV 无法构造
     }
     const keyUri = uriHint || (base + "/key.php");
@@ -393,7 +461,8 @@ function buildList(av, dm, ivHint, uriHint) {
       L.push(base + "/ts/" + av + "-" + i + ".ts");
     }
     L.push("#EXT-X-ENDLIST");
-    return { text: L.join("\n"), n: N, total, iv: ivHex };
+    return { text: L.join("\n"), n: N, total, iv: ivHex, dir };
+  });
   });
 }
 
@@ -439,14 +508,17 @@ function main() {
   const url = ($request && $request.url) || "";
   const body = ($response && $response.body) || "";
 
-  /* ---- ① 虚拟完整片列表 /__lt/<av>.m3u8?dm=N ---- */
+  /* ---- ① 虚拟完整片列表 /__lt/<av>.m3u8?dm=N[&iv=hex] ---- */
   const mp = url.match(/\/__lt\/([A-Za-z0-9_.-]+)\.m3u8/);
   if (mp) {
     const av = decodeURIComponent(mp[1]);
     const q = url.match(/[?&]dm=([\d.]+)/);
     const dm = (q ? parseFloat(q[1]) : 0) || dmGet(av);
     dmSet(av, dm);
-    return buildList(av, dm).then((r) => {
+    // iv 由页面钩子推好带过来（original_videos 类必需）
+    const ivq = url.match(/[?&]iv=([0-9a-fA-F]{32})/);
+    const ivHint = ivq ? ivq[1].toLowerCase() : "";
+    return buildList(av, dm, ivHint || undefined).then((r) => {
       if (!r) return $done({});
       if (typeof $notify === "function") {
         $notify("Lutube " + VER, "完整片源 " + av,
