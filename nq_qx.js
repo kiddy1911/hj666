@@ -2,7 +2,7 @@
  * 爱威奶（avnight）—— 解锁 VIP 播放 + 全站去广告
  * 入口：https://a5esf.xfqatj.com/    （PWA av9，Vue + video.js/VHS 3.17.2）
  * 静态资源：g.uymbc.com/pwa_av9     接口前缀：vw3
- * 版本：v1-0004
+ * 版本：v1-0005
  *
  * ══ 门槛在哪 ══════════════════════════════════════════════
  * 非 VIP 访客请求 video/{code}/info?cdn=c 时服务端返回：
@@ -32,7 +32,7 @@
  * 营运公告 / VIP 弹窗 / 浮层属于纯遮挡，CSS 隐藏即可。
  */
 
-const VER = "v1-0004";
+const VER = "v1-0005";
 const TAG = "爱威奶";
 
 /* ---------------- 广告下发的图片域名（清配置后基本不会请求到） ------------- */
@@ -50,7 +50,10 @@ function adLabel(){var R=root();if(!R||!R.$store)return;var m=R.$store.state.vid
  if(m.isOpenLabel===false&&(!m.vipAdList||!m.vipAdList.length))return;
  m.isOpenLabel=false;if(m.vipAdList&&m.vipAdList.length)m.vipAdList.length=0;}
 
-function tick(){auth();adFull();adCover();adLabel();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
+function quality(){var R=root();if(!R||!R.$store)return;var a=R.$store.state.auth;if(!a)return;if(a.isVip!==true)a.isVip=true;if(a.canUseCleanMosaic!==true)a.canUseCleanMosaic=true;if(a.videoQuality!=="hd")a.videoQuality="hd";(function walk(vm,d){if(!vm||d>14)return;if(Array.isArray(vm.hd)&&vm.__nqHd!==1){vm.__nqHd=1;for(var i=0;i<vm.hd.length;i++)if(typeof vm.hd[i]==="string")vm.hd[i]=vm.hd[i].replace("（VIP专属）","").replace("(VIP专属)","");}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}// 画质三层卡点：videoQuality 默认 "sd" → setSrcLine 永远取 240（标清）；
+// optionsHD(1) 点「高清」非 VIP 直接弹框；optionsHD(2) 点「去码」还要 canUseCleanMosaic。
+// 都是 auth 模块的普通字段，直接置位。
+function tick(){auth();quality();adFull();adCover();adLabel();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
 
 /* ---------------- 工具 ---------------- */
 const has = (o, k) => o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
@@ -78,7 +81,9 @@ const AD_FIELDS = [
   "BannerAD", "Banners", "IdentityADs", "JiugonggePopup", "JiugonggePopupCond",
   "LandingCarouselImage", "GlobalEntryAdvertisement", "VipGatePop",
   "ADHome", "Announce", "OpeningAnnouncement", "OperationAnnouncement",
+  // 伪造 VIP 后视频页底部会弹续费文案广告，一并清掉
   "BreastCoinProjectDiscountBanners", "TextAd", "ComicFullPageAd",
+  "VideoBottomPrompt",
 ];
 
 // 保留形状、清空叶子。
@@ -131,9 +136,14 @@ function applyUnlock(o, src240) {
   if (!v.sources || typeof v.sources !== "object") v.sources = {};
   const s = v.sources;
   const deep = typeof s.deepMosaics === "string" ? s.deepMosaics : "";
-  if (deep) s["240"] = deep;
-  else if (src240) s["240"] = src240;
-  if (!s["240"]) return false;
+  // 480 这个键就是画质菜单的「高清」档：optionsHD(1) 取 srcWC[480]，
+  // setSrcLine 里 isVip && videoQuality==="hd" 也是取 480。
+  // 服端对访客永远给空——cdn=c/tc、加不加 free=T 全试过，480 全是空。
+  // 唯一能拿到的 720p 是 deepMosaics，所以把它填进 480。
+  if (deep) s["480"] = deep;
+  if (src240) s["240"] = src240;
+  else if (deep) s["240"] = deep;
+  if (!s["240"] && !s["480"]) return false;
   // intro 必须清空：前端 isIntro 的判据就是 !!sources.intro
   s.intro = "";
   o.privileged = true;
