@@ -17,6 +17,16 @@
  *        再拉一次 key.php。v8 改成 max-age=3600。
  *   单段 1.3s 是 CDN 自身的首字节决定的，脚本这一层去不掉。
  *
+ * ══ v8-2320：起播黑屏 ═══════════════════════════════════════
+ *   现象：通知已弹「完整片源」，画面却长时间黑屏，长片更明显。
+ *   播放器 videoPlayerInit() 里有个起播闸门（play-d49f9b12.js）：
+ *     const s = this.$store.state.ui.ad.video;
+ *     if (s && s.length > 0) { firstAd 倒计时，等 player_ctime 递减到 0 才起播 }
+ *     else { this.playSrc(); }        ← 只有广告数组为空才立刻取源
+ *   旧版只清了 ad 的封面字段和 player_ctime。ctime 被清零后倒计时不再递减，
+ *   广告分支永远不结束 → playSrc() 一次都不调用 → 黑屏。
+ *   现在 app() 里直接 ad.video=[]，scrub() 里对任意层级的 ad.video 兜底清空。
+ *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
  *   QX 只跑在 iOS 上，iPhone Safari 的 videojs 走 supportsNativeHls
@@ -78,7 +88,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v8-2225";
+const VER = "v8-2320";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -303,6 +313,10 @@ const HOOK = [
   "if(!o||typeof o!=='object'||d>10)return o;",
   "if(Array.isArray(o)){for(var i=o.length-1;i>=0;i--){if(adish(o[i]))o.splice(i,1);else scrub(o[i],d+1);}return o;}",
   "if(o.content_type==='ad'){o.data=[];o.content_type='long_video';return o;}",
+  // 播放器起播开关：非 VIP 时只要 ui.ad.video 非空就不调用 playSrc()，
+  // 它等 player_ctime 倒计时；我们把 ctime 清零后倒计时不递减，就永远黑屏。
+  // 这里把 ad.video 数组直接清空，让它走 playSrc() 那条路。
+  "if(o.ad&&typeof o.ad==='object'&&Array.isArray(o.ad.video)){o.ad.video.length=0;}",
   "for(var k in o){if(Object.prototype.hasOwnProperty.call(o,k))scrub(o[k],d+1);}",
   "return o;}",
   "function vip(d){",
@@ -317,10 +331,10 @@ const HOOK = [
   "function app(r){",
   "if(!r||typeof r!=='object')return false;",
   "if(!(r.pwa||r.h5||r.ios||r.light||r.ad))return false;",
-  "if(r.ad&&typeof r.ad==='object'){r.ad.cover_display=false;r.ad.cover_image='';r.ad.cover_link='';}",
+  "if(r.ad&&typeof r.ad==='object'){r.ad.cover_display=false;r.ad.cover_image='';r.ad.cover_link='';r.ad.video=[];if(Array.isArray(r.ad.list))r.ad.list=[];}",
   "r.player_top_free_text={cn:'',tw:''};",
   "r.player_mid_free_text={cn:'',tw:''};",
-  "var ks=['h5','ios','light','android'];",
+  "var ks=['pwa','h5','ios','light','android'];",
   "for(var i=0;i<ks.length;i++){var b=r[ks[i]];if(b&&typeof b==='object'){",
   "b.player_timeline=0;b.player_all_ad_ctime=0;b.player_ctime=0;b.live_url='';b.live_title='';}}",
   "if(r.pwa&&typeof r.pwa==='object'){",
