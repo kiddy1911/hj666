@@ -1,50 +1,61 @@
 
 /*
- * Google One AI - Quantumult X
- * Debug version
+ * Google One 优惠套餐 SKU 改写
+ * Quantumult X - g1.js
  */
 
 (function () {
     "use strict";
 
-    try {
-        var url = typeof $request !== "undefined"
-            ? $request.url.split("?")[0]
-            : "unknown";
+    var SKU_MAP = {
+        "g1.ios.30tb.ai.pro.m":
+            "g1.ai.ultra.3months_ip_90p.acq",
 
+        "g1.ios.20tb.m.v2":
+            "g1.20tb.3months_ip_90p.acq"
+    };
+
+    try {
         var body = $response.body;
 
         if (typeof body !== "string" || !body) {
-            console.log("[G1] 响应正文为空");
+            console.log("[G1-SKU] 响应正文为空");
             $done({});
             return;
         }
 
-        var count30 = (
-            body.match(/30tb\.ai\.pro\.m/g) || []
-        ).length;
+        var modified = body;
+        var total = 0;
 
-        var count20 = (
-            body.match(/20tb\.m\.v2/g) || []
-        ).length;
+        Object.keys(SKU_MAP).forEach(function (from) {
+            var to = SKU_MAP[from];
+            var parts = modified.split(from);
+            var count = parts.length - 1;
 
-        if (count30 + count20 > 0) {
-            var modified = body
-                .replace(/30tb\.ai\.pro\.m/g, "30tb.m")
-                .replace(/20tb\.m\.v2/g, "20tb.m");
+            if (count > 0) {
+                modified = parts.join(to);
+                total += count;
 
-            console.log("[G1] 替换成功");
-            console.log("[G1] URL: " + url);
-            console.log("[G1] 30TB: " + count30);
-            console.log("[G1] 20TB: " + count20);
+                console.log(
+                    "[G1-SKU] 替换成功: " +
+                    from + " -> " + to +
+                    " (" + count + "处)"
+                );
+            }
+        });
 
+        if (total > 0) {
+            console.log(
+                "[G1-SKU] 总计替换 " + total + " 处"
+            );
             $done({ body: modified });
         } else {
+            console.log("[G1-SKU] 未匹配到套餐 SKU");
             $done({});
         }
 
     } catch (e) {
-        console.log("[G1] Error: " + e);
+        console.log("[G1-SKU] 错误: " + e);
         $done({});
     }
 })();
