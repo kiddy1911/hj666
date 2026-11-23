@@ -2,7 +2,7 @@
  * 爱威奶（avnight）—— 解锁 VIP 播放 + 全站去广告
  * 入口：https://a5esf.xfqatj.com/    （PWA av9，Vue + video.js/VHS 3.17.2）
  * 静态资源：g.uymbc.com/pwa_av9     接口前缀：vw3
- * 版本：v1-0002
+ * 版本：v1-0004
  *
  * ══ 门槛在哪 ══════════════════════════════════════════════
  * 非 VIP 访客请求 video/{code}/info?cdn=c 时服务端返回：
@@ -32,7 +32,7 @@
  * 营运公告 / VIP 弹窗 / 浮层属于纯遮挡，CSS 隐藏即可。
  */
 
-const VER = "v1-0002";
+const VER = "v1-0004";
 const TAG = "爱威奶";
 
 /* ---------------- 广告下发的图片域名（清配置后基本不会请求到） ------------- */
@@ -42,7 +42,15 @@ const AD_HOSTS = [
 ];
 
 /* ---------------- 注进 HTML 的清理脚本 ---------------- */
-const HOOK = `<style id="nq-css">#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}</style><script>(function(){if(window.__nqPatched)return;window.__nqPatched=1;var CSS="#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}";function tap(el){try{var r=el.getBoundingClientRect();var o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerId:1,isPrimary:true,button:0};["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){var E=t.indexOf("pointer")===0?PointerEvent:MouseEvent;el.dispatchEvent(new E(t,o));});return true;}catch(e){return false;}}function root(){var a=document.getElementById("app");return a&&a.__vue__||null;}function auth(){try{var r=root();var s=r&&r.$store;if(s&&s.state&&s.state.auth&&!s.state.auth.isAuth)s.state.auth.isAuth=true;}catch(e){}}function adFull(){var ad=document.getElementById("fullscreenAD");if(!ad)return;var b=ad.querySelector(".icon-close-button")||document.getElementById("fullscreenAD__close");if(!b)return;ad.__nqT=(ad.__nqT||0)+1;if(ad.__nqT<=240)tap(b);}function adCover(){var R=root();if(!R)return;(function walk(vm,d){if(!vm||d>14)return;if(vm.isShowVideoCoverAD===true&&typeof vm.closeVideoCoverAD==="function"){vm.__nqCv=(vm.__nqCv||0)+1;if(vm.__nqCv>160)return;try{vm.closeVideoCoverAD();}catch(e){}if(vm.isInitializingPlayer===true&&!vm.player){vm.__nqStuck=(vm.__nqStuck||0)+1;if(vm.__nqStuck>8){vm.isInitializingPlayer=false;try{vm.queueInitVideoPlayer();}catch(e){}}}return;}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}function css(){var h=document.head||document.documentElement;if(h&&!document.getElementById("nq-css")){var s=document.createElement("style");s.id="nq-css";s.textContent=CSS;h.appendChild(s);}}function tick(){auth();adFull();adCover();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
+const HOOK = `<style id="nq-css">#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}/* 暂停时的 VIP 导购层：VideoPagePlayerPauseState *//* 只砍文案和购买按钮，img.icon-play 与 #video_back 必须留着，否则暂停后没有播放键可用 */.video-playing-pause .pauseText,.video-playing-pause .goBuyPageBtn,.video-playing-pause .pauseWrap>a{display:none!important}</style><script>(function(){if(window.__nqPatched)return;window.__nqPatched=1;var CSS="#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}/* 暂停时的 VIP 导购层：VideoPagePlayerPauseState *//* 只砍文案和购买按钮，img.icon-play 与 #video_back 必须留着，否则暂停后没有播放键可用 */.video-playing-pause .pauseText,.video-playing-pause .goBuyPageBtn,.video-playing-pause .pauseWrap>a{display:none!important}";function tap(el){try{var r=el.getBoundingClientRect();var o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerId:1,isPrimary:true,button:0};["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){var E=t.indexOf("pointer")===0?PointerEvent:MouseEvent;el.dispatchEvent(new E(t,o));});return true;}catch(e){return false;}}function root(){var a=document.getElementById("app");return a&&a.__vue__||null;}function auth(){try{var r=root();var s=r&&r.$store;if(s&&s.state&&s.state.auth&&!s.state.auth.isAuth)s.state.auth.isAuth=true;}catch(e){}}function adFull(){var ad=document.getElementById("fullscreenAD");if(!ad)return;var b=ad.querySelector(".icon-close-button")||document.getElementById("fullscreenAD__close");if(!b)return;ad.__nqT=(ad.__nqT||0)+1;if(ad.__nqT<=240)tap(b);}function adCover(){var R=root();if(!R)return;(function walk(vm,d){if(!vm||d>14)return;if(vm.isShowVideoCoverAD===true&&typeof vm.closeVideoCoverAD==="function"){vm.__nqCv=(vm.__nqCv||0)+1;if(vm.__nqCv>160)return;try{vm.closeVideoCoverAD();}catch(e){}if(vm.isInitializingPlayer===true&&!vm.player){vm.__nqStuck=(vm.__nqStuck||0)+1;if(vm.__nqStuck>8){vm.isInitializingPlayer=false;try{vm.queueInitVideoPlayer();}catch(e){}}}return;}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}function css(){var h=document.head||document.documentElement;if(h&&!document.getElementById("nq-css")){var s=document.createElement("style");s.id="nq-css";s.textContent=CSS;h.appendChild(s);}}// 播放器右上角「首储 买2个月送15日VIP」角标。
+// 不在 swift1 里，是独立的 videoLabel 模块：
+//   {isOpenLabel:true, vipAdList:[{tag,name,amount}...], vipAdTag:"首储"}
+// 从数据层清空，比 CSS 砍 .video-label 干净（不误伤封面上的正规角标）。
+function adLabel(){var R=root();if(!R||!R.$store)return;var m=R.$store.state.videoLabel;if(!m)return;
+ if(m.isOpenLabel===false&&(!m.vipAdList||!m.vipAdList.length))return;
+ m.isOpenLabel=false;if(m.vipAdList&&m.vipAdList.length)m.vipAdList.length=0;}
+
+function tick(){auth();adFull();adCover();adLabel();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
 
 /* ---------------- 工具 ---------------- */
 const has = (o, k) => o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
