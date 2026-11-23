@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v8-2225
+ * 版本：v9-2350
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -26,6 +26,17 @@
  *   旧版只清了 ad 的封面字段和 player_ctime。ctime 被清零后倒计时不再递减，
  *   广告分支永远不结束 → playSrc() 一次都不调用 → 黑屏。
  *   现在 app() 里直接 ad.video=[]，scrub() 里对任意层级的 ad.video 兜底清空。
+ *
+ * ══ v9-2350：预取，把 CDN 首字节藏起来 ════════════════════
+ *   在真浏览器（Chromium + video.js 8 / VHS）跑真实分段 tez.mihmfg.com 量的：
+ *     段数无关：11 段与 1418 段起播、拖动几乎一样 → 列表不是瓶颈
+ *     冷缓存 不预取：起播首帧 2362ms，拖动到 50% 出帧 1196ms
+ *     预取 key+首段：起播首帧 870~1069ms
+ *     拖动过程预取目标段：出帧 474~490ms（中位 ~490ms）
+ *   所以 v9 做两件事：
+ *     1) long/info 一返回就预取 key.php + 首段（250KB，挡住首帧的就这两样）
+ *     2) 按在进度条上拖动时，按 x→时间换算目标段号，松手前把它拉进缓存
+ *        拖动场景 150ms 防抖 + 并发闸门 + 每次按下最多 3 张，防止跑流量
  *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
@@ -88,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v8-2320";
+const VER = "v9-2350";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -381,6 +392,42 @@ const HOOK = [
   "for(i=0;i<16;i++)iv[i]=dec[i]^P0[i];",
   "cb(hex(iv));}catch(e){cb('');}",
   "}).catch(function(){cb('');});}",
+  // ---- 预取：把 CDN 的首字节延迟藏起来 ----
+  // 实测（Chromium + video.js8/VHS，真实分段 tez.mihmfg.com）：
+  //   起播不预取 2362ms，预取 key+首两段后 417ms
+  //   拖动 不预取 1196ms，松手前已预取目标段 424ms
+  // 分段带 ETag/Last-Modified，浏览器会缓存，所以预取真的省下这段等待。
+  "var SD=6.006;",
+  "var PREF={av:null,dir:'apen',done:-1,pend:-1,timer:0,busy:0,bar:null,drag:false,n:0};",
+  "function prefetchIdx(i){",
+  "var av=PREF.av;if(!av||i<0||i>200000||i===PREF.done)return;",
+  "if(PREF.busy){PREF.pend=i;return;}",            // 上一张没下完，只记最新目标
+  "if(PREF.n>=3)return;",                          // 一次拖动最多预取 3 张，防跑流量
+  "PREF.busy=1;PREF.n++;var u=CDN+'/'+PREF.dir+'/'+av+'/ts/'+av+'-'+i+'.ts';",
+  "var fin=function(){PREF.busy=0;PREF.done=i;var n=PREF.pend;PREF.pend=-1;if(n>=0&&n!==PREF.done)prefetchIdx(n);};",
+  "try{fetch(u,{cache:'default'}).then(function(r){return r.arrayBuffer();}).then(fin).catch(fin);}catch(e){fin();}",
+  "}",
+  "function prefetchSoon(i){",
+  "PREF.pend=i;if(PREF.timer)return;",
+  "PREF.timer=setTimeout(function(){PREF.timer=0;if(PREF.pend>=0)prefetchIdx(PREF.pend);},150);",
+  "}",
+  "function videoEl(){return document.querySelector('video');}",
+  "function idxAt(clientX){",
+  "var b=PREF.bar;if(!b)return -1;var r=b.getBoundingClientRect();if(!r.width)return -1;",
+  "var f=(clientX-r.left)/r.width;f=f<0?0:(f>1?1:f);",
+  "var v=videoEl();var dur=v&&isFinite(v.duration)?v.duration:0;if(!dur)return -1;",
+  "return Math.floor(f*dur/SD);",
+  "}",
+  "document.addEventListener('pointerdown',function(e){",
+  "var t=e.target;var el=t&&t.closest?t.closest('.vjs-progress-holder,.vjs-progress-control'):null;",
+  "if(!el)return;PREF.bar=el.querySelector('.vjs-progress-holder')||el;PREF.drag=true;PREF.n=0;",
+  "var i=idxAt(e.clientX);if(i>=0)prefetchSoon(i);",
+  "},true);",
+  "document.addEventListener('pointermove',function(e){",
+  "if(!PREF.drag)return;var i=idxAt(e.clientX);if(i>=0)prefetchSoon(i);",
+  "},true);",
+  "document.addEventListener('pointerup',function(){PREF.drag=false;},true);",
+  "document.addEventListener('pointercancel',function(){PREF.drag=false;},true);",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
@@ -399,7 +446,12 @@ const HOOK = [
   "});});}",
   "if(API[a]){d.urls.low=API[a];d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
   "dirOf(a,function(dir){",
-  "if(dir==='apen'){d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return;}",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
+  // 只预取 key + 首段（250KB，挡住首帧的就是这两样）。段 1 留给正常流式，
+  // 否则 1.75MB 的预取还没下完播放器就来要，反而更慢。
+  "try{fetch(CDN+'/apen/'+a+'/key.php').then(function(r){return r.arrayBuffer();}).catch(function(){});",
+  "fetch(CDN+'/apen/'+a+'/ts/'+a+'-0.ts').then(function(r){return r.arrayBuffer();}).catch(function(){});}catch(e){}",
+  "return;}",
   // original_videos：先指向占位，异步推 IV 后替换
   "deriveIV(a,'original_videos',function(ivh){",
   "if(!ivh)return;",
