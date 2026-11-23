@@ -1,49 +1,50 @@
 
 /*
  * Google One AI - Quantumult X
- * Description: Google One 套餐标识响应改写
- * Platform: Quantumult X
- * Type: script-response-body
+ * Debug version
  */
 
 (function () {
     "use strict";
 
     try {
-        if (
-            typeof $response === "undefined" ||
-            typeof $response.body !== "string"
-        ) {
-            console.log("[Google One] 响应正文为空");
+        var url = typeof $request !== "undefined"
+            ? $request.url.split("?")[0]
+            : "unknown";
+
+        var body = $response.body;
+
+        if (typeof body !== "string" || !body) {
+            console.log("[G1] 响应正文为空");
             $done({});
             return;
         }
 
-        var body = $response.body;
-        var modified = body;
+        var count30 = (
+            body.match(/30tb\.ai\.pro\.m/g) || []
+        ).length;
 
-        // 30TB 套餐标识替换
-        modified = modified.replace(
-            /30tb\.ai\.pro\.m/g,
-            "30tb.m"
-        );
+        var count20 = (
+            body.match(/20tb\.m\.v2/g) || []
+        ).length;
 
-        // 20TB 套餐标识替换
-        modified = modified.replace(
-            /20tb\.m\.v2/g,
-            "20tb.m"
-        );
+        if (count30 + count20 > 0) {
+            var modified = body
+                .replace(/30tb\.ai\.pro\.m/g, "30tb.m")
+                .replace(/20tb\.m\.v2/g, "20tb.m");
 
-        if (modified !== body) {
-            console.log("[Google One] 套餐标识替换成功");
+            console.log("[G1] 替换成功");
+            console.log("[G1] URL: " + url);
+            console.log("[G1] 30TB: " + count30);
+            console.log("[G1] 20TB: " + count20);
+
             $done({ body: modified });
         } else {
-            console.log("[Google One] 未匹配到目标套餐标识");
             $done({});
         }
 
-    } catch (error) {
-        console.log("[Google One] 错误: " + error);
+    } catch (e) {
+        console.log("[G1] Error: " + e);
         $done({});
     }
 })();
