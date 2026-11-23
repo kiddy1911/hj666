@@ -1,7 +1,21 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v7-0810
+ * 版本：v8-2225
+ *
+ * ══ v8：拖动卡顿 ═══════════════════════════════════════════
+ *   现象：长片拖动进度条特别卡，短片不明显。
+ *   实测 CDN（tez.mihmfg.com，新加坡直连）：
+ *     握手 0.42~0.53s · 首字节 0.60~0.65s · 1.1~1.3 MB/s
+ *     一个中段 6 秒段  1.48~1.65 MB → 单段 1.26~1.39s
+ *     段大小区间 41KB(首尾) ~ 1.65MB，段首均为 SPS/PPS/IDR，可任意定位
+ *   两个放大器，都在我们这侧：
+ *     1) urls 三个字段全填 → videoSrcCount=3 → 播放器改用整组雪碧图
+ *        （previewList 全数组，86 张×100 格）。片越长图越多，拖一次拉一张，
+ *        每张都是 0.6s 首字节。v8 只留 low，count 回到 1，单张图。
+ *     2) Cache-Control:no-store → 每次重新解析列表都得再跑一遍脚本、
+ *        再拉一次 key.php。v8 改成 max-age=3600。
+ *   单段 1.3s 是 CDN 自身的首字节决定的，脚本这一层去不掉。
  *
  * ══ v3 为什么在真机上完全没效果 ════════════════════════════════
  *   v3 把「拦 /l2media/*.m3u8 换完整片」写在页面内的 XHR/fetch 钩子里。
@@ -64,7 +78,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v7-0810";
+const VER = "v8-2225";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -369,14 +383,14 @@ const HOOK = [
   "head(CDN+'/original_videos/'+av+'/ts/'+av+'-0.ts').then(function(st2){",
   "cb((st2===200||st2===206)?'original_videos':'apen');",
   "});});}",
-  "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.__lt=1;window.__ltAV=a;return true;}",
+  "if(API[a]){d.urls.low=API[a];d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
   "dirOf(a,function(dir){",
-  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;return;}",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return;}",
   // original_videos：先指向占位，异步推 IV 后替换
   "deriveIV(a,'original_videos',function(ivh){",
   "if(!ivh)return;",
   "var u=u0+'&iv='+ivh;API[a]=u;",
-  "if(d.urls){d.urls.low=u;d.urls.high=u;d.__lt=1;}",
+  "if(d.urls){d.urls.low=u;d.urls.high='';d.urls.intro='';d.__lt=1;}",
   // 播放器可能已经拿着 no-iv 的地址起播了。
   // iOS 原生 HLS 下 video.src 就是 m3u8 地址，直接换成带 iv 的即可。
   "var tries=0;",
@@ -388,7 +402,7 @@ const HOOK = [
   "if(tries>20)clearInterval(fix);",
   "},500);",
   "});",
-  "d.urls.low=u0;d.urls.high=u0;d.__lt=1;window.__ltAV=a;",
+  "d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;",
   "});",
   "return true;}",
   "JSON.parse=function(s,rev){",
@@ -616,8 +630,26 @@ function buildList(av, dm, ivHint, uriHint) {
 const M3U8_HEADERS = {
   "Content-Type": "application/vnd.apple.mpegurl",
   "Access-Control-Allow-Origin": "*",
-  "Cache-Control": "no-store",
+  // 不能 no-store：播放器每拖动一次都可能重新解析列表，
+  // 一重新解析就再跑一次脚本、再拉一次 key.php（CDN 首字节 0.6 秒）。
+  // 允许缓存后，一次播放只解析一次列表。
+  "Cache-Control": "public, max-age=3600",
 };
+
+/* 同一部片只弹一次通知。
+   列表被反复请求时，$notify 会连发，既吵又拖慢响应。 */
+function notifyOnce(k, a, b, c) {
+  // QX 每次请求都是全新的脚本实例，内存变量不跨请求，只能用 $prefs。
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+      const last = parseInt($prefs.valueForKey("lt_nf_" + k), 10) || 0;
+      const now = Date.now();
+      if (now - last < 600000) return;
+      $prefs.setValueForKey(String(now), "lt_nf_" + k);
+    }
+  } catch (e) {}
+  if (typeof $notify === "function") $notify(a, b, c);
+}
 
 /* ============================================================
  *  HTML 清洗
@@ -667,10 +699,8 @@ function main() {
     const ivHint = ivq ? ivq[1].toLowerCase() : "";
     return buildList(av, dm, ivHint || undefined).then((r) => {
       if (!r) return $done({});
-      if (typeof $notify === "function") {
-        $notify("Lutube " + VER, "完整片源 " + av,
-          "段数 " + r.n + " · 约 " + Math.round(r.total / 60) + " 分钟");
-      }
+      notifyOnce("pl:" + av, "Lutube " + VER, "完整片源 " + av,
+        "段数 " + r.n + " · 约 " + Math.round(r.total / 60) + " 分钟");
       return $done({ status: 200, headers: M3U8_HEADERS, body: r.text });
     });
   }
@@ -691,10 +721,8 @@ function main() {
     if (segs > 60) return $done({});
     return buildList(av, dm, iv || undefined, uriOfKeyLine(keyLineOf(txt)) || undefined).then((r) => {
       if (!r) return $done({});
-      if (typeof $notify === "function") {
-        $notify("Lutube " + VER, "完整片源 " + av,
-          "段数 " + r.n + " · 约 " + Math.round(r.total / 60) + " 分钟");
-      }
+      notifyOnce("pl:" + av, "Lutube " + VER, "完整片源 " + av,
+        "段数 " + r.n + " · 约 " + Math.round(r.total / 60) + " 分钟");
       return $done({ status: 200, headers: M3U8_HEADERS, body: r.text });
     });
   }
@@ -717,13 +745,15 @@ function main() {
     const hasIntro = /"intro"\s*:\s*"[^"]+"/.test(plain);
     if (!av || !hasIntro || hasFull) return $done({});
     // VIP 片：只有 intro（11 段试看）→ 换成完整片源。
-    // 三个字段全填同一个地址，不只是为了播放：
-    //   播放器 videoSrcCount = Object.values(urls).filter(Boolean).length，
-    //   等于 1 时进度条缩略图只用 previewList[6] 单张雪碧图（100 格 ≈ 62 秒，
-    //   对应试看长度）。换成 142 分钟完整版后这 100 格被摊到 8520 秒，
-    //   一格覆盖 85 秒，拖动时预览画面完全对不上。
-    //   填满三个字段让 count 变 3，播放器改用 urlArray 整组雪碧图
-    //   （86 张 × 100 格 × 约 1 秒，正好覆盖全长），预览才对得准。
+    // 只填 low，high/intro 置空，让 videoSrcCount 停在 1：
+    //   播放器 setupSpriteThumbnails():
+    //     count===1 → spriteThumbnails({url: previewList[6]})   单张图，一次请求
+    //     count>1   → spriteThumbnails({urlArray: previewList}) 整组几十张图
+    //   片越长图越多。CDN 每张首字节 0.6 秒、TARGETDURATION 6 秒一段，
+    //   拖动时一张张拉图就是「长片快进特别卡」的来源。
+    //   三个字段本来就指向同一个地址，playSrc 走
+    //   urls[videoQuality] || low || high || intro，留 low 一样能播。
+    //   代价：拖动预览帧退回单张图，时间点不再精确（播放在意度更低）。
     const u = "/__lt/" + av + ".m3u8?dm=" + dm;
     // 只在 urls 对象内部替换，避免误伤标题里出现的同名字段
     const ui = plain.indexOf('"urls"');
@@ -742,8 +772,8 @@ function main() {
     const tail = plain.slice(rb);
     const newMid = mid
       .replace(/("low"\s*:\s*)"[^"]*"/, '$1"' + u + '"')
-      .replace(/("high"\s*:\s*)"[^"]*"/, '$1"' + u + '"')
-      .replace(/("intro"\s*:\s*)"[^"]*"/, '$1"' + u + '"');
+      .replace(/("high"\s*:\s*)"[^"]*"/, '$1""')
+      .replace(/("intro"\s*:\s*)"[^"]*"/, '$1""');
     const np = head + newMid + tail;
     if (np === plain) return $done({});
     // 响应体长度变了，content-length 必须重算，否则会被截断
@@ -762,9 +792,7 @@ function main() {
       let bin = "";
       for (let i = 0; i < enc.length; i++) bin += String.fromCharCode(enc[i]);
       const out = b64encode(bin);
-      if (typeof $notify === "function") {
-        $notify("Lutube " + VER, "已接管 " + av, "试看 → 完整片源");
-      }
+      notifyOnce("info:" + av, "Lutube " + VER, "已接管 " + av, "试看 → 完整片源");
       const hdr = {};
       const src = $response.headers || {};
       for (const k in src) {
