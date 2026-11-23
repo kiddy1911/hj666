@@ -2,7 +2,7 @@
  * 爱威奶（avnight）—— 解锁 VIP 播放 + 全站去广告
  * 入口：https://a5esf.xfqatj.com/    （PWA av9，Vue + video.js/VHS 3.17.2）
  * 静态资源：g.uymbc.com/pwa_av9     接口前缀：vw3
- * 版本：v1-0006
+ * 版本：v1-0007
  *
  * ══ 门槛在哪 ══════════════════════════════════════════════
  * 非 VIP 访客请求 video/{code}/info?cdn=c 时服务端返回：
@@ -32,7 +32,7 @@
  * 营运公告 / VIP 弹窗 / 浮层属于纯遮挡，CSS 隐藏即可。
  */
 
-const VER = "v1-0006";
+const VER = "v1-0007";
 const TAG = "爱威奶";
 
 /* ---------------- 广告下发的图片域名（清配置后基本不会请求到） ------------- */
@@ -209,13 +209,26 @@ function main() {
       hdr["Authorization"] || hdr["authorization"] || "";
     const tok = String(rawTok).replace(/^Bearer\s+/i, "");
     const r = unlockVideo(body, url, tok);
-    if (!r) return $done({});
+    if (!r) {
+      // 服务端对这类片连全长源都不给：exclusive=true 且没有 deepMosaics、也没有 240。
+      // 抽 20 部新片实测，这种占一半；signature 按文件签（换段号/换路径全 403），
+      // 无法自行拼播放列表，所以只能提示，别让人白等 62 秒试看。
+      if (typeof $notify === "function") {
+        $notify(TAG + " " + VER, "这部片没有全长源", "服务端只给 62 秒试看，换一部试试");
+      }
+      return $done({});
+    }
     if (typeof r === "string") {
       if (typeof $notify === "function") $notify(TAG + " " + VER, "已解锁播放", "全长片源");
       return $done({ body: r });
     }
     return r.then((out) => {
-      if (!out) return $done({});
+      if (!out) {
+        if (typeof $notify === "function") {
+          $notify(TAG + " " + VER, "这部片没有全长源", "服务端只给 62 秒试看，换一部试试");
+        }
+        return $done({});
+      }
       if (typeof $notify === "function") $notify(TAG + " " + VER, "已解锁播放", "全长片源");
       return $done({ body: out });
     });
