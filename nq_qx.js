@@ -2,7 +2,7 @@
  * 爱威奶（avnight）—— 解锁 VIP 播放 + 全站去广告
  * 入口：https://a5esf.xfqatj.com/    （PWA av9，Vue + video.js/VHS 3.17.2）
  * 静态资源：g.uymbc.com/pwa_av9     接口前缀：vw3
- * 版本：v1-0001
+ * 版本：v1-0002
  *
  * ══ 门槛在哪 ══════════════════════════════════════════════
  * 非 VIP 访客请求 video/{code}/info?cdn=c 时服务端返回：
@@ -32,7 +32,7 @@
  * 营运公告 / VIP 弹窗 / 浮层属于纯遮挡，CSS 隐藏即可。
  */
 
-const VER = "v1-0001";
+const VER = "v1-0002";
 const TAG = "爱威奶";
 
 /* ---------------- 广告下发的图片域名（清配置后基本不会请求到） ------------- */
@@ -42,7 +42,7 @@ const AD_HOSTS = [
 ];
 
 /* ---------------- 注进 HTML 的清理脚本 ---------------- */
-const HOOK = `<style id="nq-css">#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}</style><script>(function(){if(window.__nqPatched)return;window.__nqPatched=1;var CSS="#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}";function tap(el){try{var r=el.getBoundingClientRect();var o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerId:1,isPrimary:true,button:0};["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){var E=t.indexOf("pointer")===0?PointerEvent:MouseEvent;el.dispatchEvent(new E(t,o));});return true;}catch(e){return false;}}function root(){var a=document.getElementById("app");return a&&a.__vue__||null;}function auth(){try{var r=root();var s=r&&r.$store;if(s&&s.state&&s.state.auth&&!s.state.auth.isAuth)s.state.auth.isAuth=true;}catch(e){}}function adFull(){var ad=document.getElementById("fullscreenAD");if(!ad)return;var b=ad.querySelector(".icon-close-button")||document.getElementById("fullscreenAD__close");if(!b)return;ad.__nqT=(ad.__nqT||0)+1;if(ad.__nqT<=80)tap(b);}function adCover(){if(!document.getElementById("video_cover_ad__close"))return;var R=root();if(!R)return;(function walk(vm,d){if(!vm||d>14)return;if(vm.isShowVideoCoverAD===true&&typeof vm.closeVideoCoverAD==="function"){vm.__nqCv=(vm.__nqCv||0)+1;if(vm.__nqCv>60)return;try{vm.closeVideoCoverAD();}catch(e){}return;}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}function css(){var h=document.head||document.documentElement;if(h&&!document.getElementById("nq-css")){var s=document.createElement("style");s.id="nq-css";s.textContent=CSS;h.appendChild(s);}}function tick(){auth();adFull();adCover();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
+const HOOK = `<style id="nq-css">#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}</style><script>(function(){if(window.__nqPatched)return;window.__nqPatched=1;var CSS="#announce,#announce__bg,#pop__bg,.popFile.pop_container,#pop_user,.invite-pop{display:none!important}";function tap(el){try{var r=el.getBoundingClientRect();var o={bubbles:true,cancelable:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,pointerId:1,isPrimary:true,button:0};["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){var E=t.indexOf("pointer")===0?PointerEvent:MouseEvent;el.dispatchEvent(new E(t,o));});return true;}catch(e){return false;}}function root(){var a=document.getElementById("app");return a&&a.__vue__||null;}function auth(){try{var r=root();var s=r&&r.$store;if(s&&s.state&&s.state.auth&&!s.state.auth.isAuth)s.state.auth.isAuth=true;}catch(e){}}function adFull(){var ad=document.getElementById("fullscreenAD");if(!ad)return;var b=ad.querySelector(".icon-close-button")||document.getElementById("fullscreenAD__close");if(!b)return;ad.__nqT=(ad.__nqT||0)+1;if(ad.__nqT<=240)tap(b);}function adCover(){var R=root();if(!R)return;(function walk(vm,d){if(!vm||d>14)return;if(vm.isShowVideoCoverAD===true&&typeof vm.closeVideoCoverAD==="function"){vm.__nqCv=(vm.__nqCv||0)+1;if(vm.__nqCv>160)return;try{vm.closeVideoCoverAD();}catch(e){}if(vm.isInitializingPlayer===true&&!vm.player){vm.__nqStuck=(vm.__nqStuck||0)+1;if(vm.__nqStuck>8){vm.isInitializingPlayer=false;try{vm.queueInitVideoPlayer();}catch(e){}}}return;}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}function css(){var h=document.head||document.documentElement;if(h&&!document.getElementById("nq-css")){var s=document.createElement("style");s.id="nq-css";s.textContent=CSS;h.appendChild(s);}}function tick(){auth();adFull();adCover();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
 
 /* ---------------- 工具 ---------------- */
 const has = (o, k) => o && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, k);
@@ -73,6 +73,25 @@ const AD_FIELDS = [
   "BreastCoinProjectDiscountBanners", "TextAd", "ComicFullPageAd",
 ];
 
+// 保留形状、清空叶子。
+// 直接整个塞成 {} 会炸：前端 getter 里有
+//   indexAD: e.apiConfig.Banners.HomeList.forEach(...)
+//   indexMenuConfig: e.apiConfig.Banners.HomeList[0] ? ... : ...
+// 清成 {} 后 HomeList 变 undefined → undefined.forEach / undefined[0] 抛 TypeError。
+// 所以对象里的键必须留着，只把内容清空。
+function blankShape(v) {
+  if (Array.isArray(v)) return [];
+  if (v && typeof v === "object") {
+    const o = {};
+    for (const k of Object.keys(v)) o[k] = blankShape(v[k]);
+    return o;
+  }
+  if (typeof v === "string") return "";
+  if (typeof v === "number") return 0;
+  if (typeof v === "boolean") return false;
+  return v;
+}
+
 function cleanConfig(body) {
   let o;
   try { o = JSON.parse(body); } catch (e) { return null; }
@@ -83,8 +102,10 @@ function cleanConfig(body) {
     if (!has(d, k)) continue;
     const v = d[k];
     if (Array.isArray(v)) { if (v.length) hit++; d[k] = []; }
-    else if (v && typeof v === "object") { if (Object.keys(v).length) hit++; d[k] = {}; }
-    else { d[k] = Array.isArray(v) ? [] : {}; }
+    else if (v && typeof v === "object") {
+      if (Object.keys(v).length) hit++;
+      d[k] = blankShape(v);
+    } else { d[k] = Array.isArray(v) ? [] : {}; }
   }
   if (has(d, "EntryCPISwitch") && d.EntryCPISwitch !== false) { d.EntryCPISwitch = false; hit++; }
   if (has(d, "EntryCPIAllowSkip")) d.EntryCPIAllowSkip = true;
