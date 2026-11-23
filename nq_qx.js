@@ -2,7 +2,7 @@
  * 爱威奶（avnight）—— 解锁 VIP 播放 + 全站去广告
  * 入口：https://a5esf.xfqatj.com/    （PWA av9，Vue + video.js/VHS 3.17.2）
  * 静态资源：g.uymbc.com/pwa_av9     接口前缀：vw3
- * 版本：v1-0005
+ * 版本：v1-0006
  *
  * ══ 门槛在哪 ══════════════════════════════════════════════
  * 非 VIP 访客请求 video/{code}/info?cdn=c 时服务端返回：
@@ -32,7 +32,7 @@
  * 营运公告 / VIP 弹窗 / 浮层属于纯遮挡，CSS 隐藏即可。
  */
 
-const VER = "v1-0005";
+const VER = "v1-0006";
 const TAG = "爱威奶";
 
 /* ---------------- 广告下发的图片域名（清配置后基本不会请求到） ------------- */
@@ -50,9 +50,9 @@ function adLabel(){var R=root();if(!R||!R.$store)return;var m=R.$store.state.vid
  if(m.isOpenLabel===false&&(!m.vipAdList||!m.vipAdList.length))return;
  m.isOpenLabel=false;if(m.vipAdList&&m.vipAdList.length)m.vipAdList.length=0;}
 
-function quality(){var R=root();if(!R||!R.$store)return;var a=R.$store.state.auth;if(!a)return;if(a.isVip!==true)a.isVip=true;if(a.canUseCleanMosaic!==true)a.canUseCleanMosaic=true;if(a.videoQuality!=="hd")a.videoQuality="hd";(function walk(vm,d){if(!vm||d>14)return;if(Array.isArray(vm.hd)&&vm.__nqHd!==1){vm.__nqHd=1;for(var i=0;i<vm.hd.length;i++)if(typeof vm.hd[i]==="string")vm.hd[i]=vm.hd[i].replace("（VIP专属）","").replace("(VIP专属)","");}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}// 画质三层卡点：videoQuality 默认 "sd" → setSrcLine 永远取 240（标清）；
-// optionsHD(1) 点「高清」非 VIP 直接弹框；optionsHD(2) 点「去码」还要 canUseCleanMosaic。
-// 都是 auth 模块的普通字段，直接置位。
+function quality(){var R=root();if(!R||!R.$store)return;(function walk(vm,d){if(!vm||d>14)return;if(typeof vm.optionsHD==="function"&&vm.__nqOH!==1&&vm.srcWC){vm.__nqOH=1;vm.optionsHD=function(e){try{var w=this.srcWC||{};var deep=w.deepMosaics||"",sd=w[240]||"",h=w[480]||"";var pick=e===0?(sd||h||deep):e===1?(h||deep||sd):(deep||h||sd);if(!pick)return;if(this.isIntro&&w.intro)return this.changePlayerSource(w.intro,{quality:"intro"});this.currentHIndex=pick===deep?2:(pick===h?1:0);this.isPlayVideo=!0;this.changePlayerSource(pick,{quality:pick===deep?"deepMosaics":(pick===h?"480":"240")});}catch(x){}};}if(Array.isArray(vm.hd)&&vm.__nqHd!==1){vm.__nqHd=1;for(var i=0;i<vm.hd.length;i++)if(typeof vm.hd[i]==="string")vm.hd[i]=vm.hd[i].replace("（VIP专属）","").replace("(VIP专属)","");}(vm.$children||[]).forEach(function(c){walk(c,d+1);});})(R,0);}
+// 那三个是 store 全局字段，动它们会连带影响 VIP 线路与请求参数（iOS 上实测把播放搞挂）。
+// optionsHD 原版非 VIP 会 return checkIfExclusive("vipBlock","高清")。
 function tick(){auth();quality();adFull();adCover();adLabel();}var n=0;var iv=setInterval(function(){tick();if(++n>240)clearInterval(iv);},250);function boot(){css();tick();}if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();try{new MutationObserver(function(){tick();}).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}})();</script>`;
 
 /* ---------------- 工具 ---------------- */
