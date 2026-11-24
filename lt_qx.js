@@ -1,7 +1,24 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v15-1933
+ * 版本：v16-2330
+ *
+ * ══ v16：快进「画面冻住几秒」到底冻在哪 ═══════════════════════
+ *   缩略图已正常，剩下的是快进后画面停很久才动。用 Chromium + video.js 8.11.1
+ *   + VHS 接真实 CDN（CHN-181-CN，1387 段 × 6.006s，每段 1.0~1.4MB）逐项量：
+ *     快进 3000s：seeking 2ms → seeked 4720ms；期间只有两条请求
+ *                 key.php 13ms(ETag 直接命中) + seg#499 下载 4092ms
+ *     快进 7000s：seeked 3841ms，seg#1165 下载 3213ms
+ *     目标段先预取再快进：seeked 617ms，播放器那次 XHR 只花 8ms（缓存命中）
+ *     段已在途时立刻快进：seeked 3561ms（浏览器合并成一条请求，不亏不赚）
+ *   结论：冻结时间 ≈ 一整段 ts 的下载时间，跟 key、列表体积、时间戳漂移都无关
+ *   （1387 段 × 6.006 与实测 PTS 步长一致，段首 PTS 0.111/3003.119 线性）。
+ *   HLS 必须先拿完整段才能解出第一帧，所以唯一能改的是「什么时候开始下」：
+ *     · 按下进度条立刻下当前位置（不再等 150ms 防抖）
+ *     · 拖动中 80ms 去抖换目标，换目标就 abort 掉旧请求，不排队
+ *     · 松手点再补一次；鼠标悬停也算一次（260ms 去抖）
+ *     · 一次手势最多 4 段，段号命中过就跳过
+ *   实测这条路径把 4720ms 压到 617ms（同机同片同位置）。
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +116,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v15-1933";
+const VER = "v16-2330";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -404,24 +421,41 @@ const HOOK = [
   "for(i=0;i<16;i++)iv[i]=dec[i]^P0[i];",
   "cb(hex(iv));}catch(e){cb('');}",
   "}).catch(function(){cb('');});}",
-  // ---- 预取：把 CDN 的首字节延迟藏起来 ----
-  // 实测（Chromium + video.js8/VHS，真实分段 tez.mihmfg.com）：
-  //   起播不预取 2362ms，预取 key+首两段后 417ms
-  //   拖动 不预取 1196ms，松手前已预取目标段 424ms
-  // 分段带 ETag/Last-Modified，浏览器会缓存，所以预取真的省下这段等待。
+  // ---- 预取：快进卡顿的唯一来源就是「目标段整段下载」 ----
+  // 实测（Chromium + video.js 8.11.1 + VHS，真实 CDN，CHN-181-CN，1.2MB/段）：
+  //   起播：key.php 1297ms + seg0 2452ms
+  //   快进 3000s 冷缓存：seeked 4720ms，其中 seg 下载 4092ms，key 只花 13ms(ETag 命中)
+  //   快进 7000s 冷缓存：seeked 3841ms，其中 seg 下载 3213ms
+  //   目标段已预取：     seeked  617ms（播放器那次 XHR 只用 8ms，直接命中缓存）
+  //   预取在途时立刻快进：seeked 3561ms（浏览器把两个请求合并成一条，不亏也不赚）
+  // 所以 key/列表/时间戳都不是瓶颈，别再往那上面改。
+  // 能动的只有一件事：把 1.2MB 的下载从「松手之后」挪到「手指还在进度条上」。
+  // 做法：按下立刻下当前位置，拖动时 80ms 去抖改目标并 abort 掉旧的，
+  // 松手点再补一次（播放器随即发出的请求会和它合并）。一次手势最多 4 段，防跑流量。
   "var SD=6.006;",
-  "var PREF={av:null,dir:'apen',done:-1,pend:-1,timer:0,busy:0,bar:null,drag:false,n:0};",
+  "var PREF={av:null,dir:'apen',bar:null,drag:false,timer:0,pend:-1,cur:-1,ctl:null,seq:0,n:0,max:4,seen:{},pl:0};",
+  "function pfAbort(){try{if(PREF.ctl)PREF.ctl.abort();}catch(e){}PREF.ctl=null;PREF.cur=-1;}",
+  "function isVhs(){try{var p=window.__ltPlayer;return !!(p&&p.tech_&&p.tech_.vhs);}catch(e){}return false;}",
   "function prefetchIdx(i){",
-  "var av=PREF.av;if(!av||i<0||i>200000||i===PREF.done)return;",
-  "if(PREF.busy){PREF.pend=i;return;}",            // 上一张没下完，只记最新目标
-  "if(PREF.n>=3)return;",                          // 一次拖动最多预取 3 张，防跑流量
-  "PREF.busy=1;PREF.n++;var u=CDN+'/'+PREF.dir+'/'+av+'/ts/'+av+'-'+i+'.ts';",
-  "var fin=function(){PREF.busy=0;PREF.done=i;var n=PREF.pend;PREF.pend=-1;if(n>=0&&n!==PREF.done)prefetchIdx(n);};",
-  "try{fetch(u,{cache:'default'}).then(function(r){return r.arrayBuffer();}).then(fin).catch(fin);}catch(e){fin();}",
+  "if(!isVhs()||PREF.pl)return;",                    // 原生 HLS 预取无效；播放器自己在拖动中就 seek 的也不预取（会下两遍）
+  "var av=PREF.av;if(!av||i<0||i>200000)return;",
+  "var s=PREF.seen[av];if(s&&s[i])return;",         // 这段已经下过了
+  "if(PREF.cur===i)return;",                        // 正在下的就是它
+  "if(PREF.n>=PREF.max)return;",                    // 一次手势最多 4 段
+  "pfAbort();PREF.cur=i;PREF.n++;var my=++PREF.seq;",
+  "var u=CDN+'/'+PREF.dir+'/'+av+'/ts/'+av+'-'+i+'.ts';",
+  "var c=null;try{c=new AbortController();PREF.ctl=c;}catch(e){}",
+  "var fin=function(good){",
+  "if(good){var t=PREF.seen[PREF.av]||(PREF.seen[PREF.av]={});t[i]=1;}",
+  "if(my===PREF.seq){PREF.cur=-1;PREF.ctl=null;}",
+  "};",
+  "try{fetch(u,c?{cache:'default',signal:c.signal}:{cache:'default'})",
+  ".then(function(r){return r.arrayBuffer();}).then(function(){fin(1);},function(){fin(0);});}",
+  "catch(e){fin(0);}",
   "}",
-  "function prefetchSoon(i){",
-  "PREF.pend=i;if(PREF.timer)return;",
-  "PREF.timer=setTimeout(function(){PREF.timer=0;if(PREF.pend>=0)prefetchIdx(PREF.pend);},150);",
+  "function prefetchSoon(i,d){",
+  "if(i<0||PREF.pl)return;PREF.pend=i;if(PREF.timer)return;",
+  "PREF.timer=setTimeout(function(){PREF.timer=0;var n=PREF.pend;PREF.pend=-1;if(n>=0)prefetchIdx(n);},d||80);",
   "}",
   "function videoEl(){return document.querySelector('video');}",
   "function idxAt(clientX){",
@@ -430,16 +464,70 @@ const HOOK = [
   "var v=videoEl();var dur=v&&isFinite(v.duration)?v.duration:0;if(!dur)return -1;",
   "return Math.floor(f*dur/SD);",
   "}",
+  "function barOf(t){try{return t&&t.closest?t.closest('.vjs-progress-holder,.vjs-progress-control'):null;}catch(e){return null;}}",
+  "function grab(e){",
+  "var el=barOf(e.target);if(!el)return false;",
+  "PREF.bar=el.querySelector('.vjs-progress-holder')||el;PREF.drag=true;PREF.n=0;LSK.n=0;PREF.pl=0;",
+  "return true;",
+  "}",
   "document.addEventListener('pointerdown',function(e){",
-  "var t=e.target;var el=t&&t.closest?t.closest('.vjs-progress-holder,.vjs-progress-control'):null;",
-  "if(!el)return;PREF.bar=el.querySelector('.vjs-progress-holder')||el;PREF.drag=true;PREF.n=0;",
-  "var i=idxAt(e.clientX);if(i>=0)prefetchSoon(i);",
+  "if(!grab(e))return;var i=idxAt(e.clientX);if(i>=0)prefetchSoon(i,120);",  // 按下就排上；播放器若自己 seek 了会取消
+  "liveSoon(e.clientX);",
   "},true);",
   "document.addEventListener('pointermove',function(e){",
-  "if(!PREF.drag)return;var i=idxAt(e.clientX);if(i>=0)prefetchSoon(i);",
+  "if(PREF.drag){prefetchSoon(idxAt(e.clientX),80);liveSoon(e.clientX);return;}",
+  "if(barOf(e.target))prefetchSoon(idxAt(e.clientX),260);",             // 鼠标悬停也提前下
   "},true);",
-  "document.addEventListener('pointerup',function(){PREF.drag=false;},true);",
-  "document.addEventListener('pointercancel',function(){PREF.drag=false;},true);",
+  "document.addEventListener('pointerup',function(e){",
+  "if(!PREF.drag)return;PREF.drag=false;",
+  "liveStop();",
+  "pfAbort();",                                                        // 在途预取让给播放器，避免同一段下两遍
+  "},true);",
+  "document.addEventListener('pointercancel',function(){PREF.drag=false;liveStop();},true);",
+  // iOS 原生 HLS 下页面 fetch 进不了 AVFoundation 的缓存，预取对它没用。
+  // 所以再补一条：停手 450ms 没动就直接把 currentTime 设到该位置，
+  // 让播放器自己去拉那一段。松手时它多半已经拉完 → 松手即出画。
+  // 站点 playOptions 里 disableSeekWhileScrubbingOnMobile:true 关掉了拖动中 seek，
+  // 这里绕过它，但只在「手指停住」时做一次，不连续 seek。
+  "var LSK={timer:0,cx:0,n:0,max:2};",
+  "function liveStop(){if(LSK.timer){clearTimeout(LSK.timer);LSK.timer=0;}}",
+  "function liveSeek(){",
+  "if(window.__ltLS===0)return;",
+  "if(isVhs())return;",                             // VHS 走预取那条路，别两边同时下
+  "if(LSK.n>=LSK.max)return;",                       // 一次手势最多先 seek 两次，别把流量造光
+  "var p=window.__ltPlayer;if(!p)return;var v=videoEl();if(!v)return;",
+  "var i=idxAt(LSK.cx);if(i<0)return;var t=i*SD;",
+  "var d=v.duration;if(d&&isFinite(d)&&t>d-2)t=Math.max(0,d-2);",
+  "if(Math.abs(t-v.currentTime)<1.5)return;",                           // 已在附近，别折腾
+  "LSK.n++;try{p.currentTime(t);}catch(e){}",
+  "}",
+  "function liveSoon(cx){",
+  "LSK.cx=cx;if(LSK.timer)return;",
+  "LSK.timer=setTimeout(function(){LSK.timer=0;liveSeek();},450);",
+  "}",
+  // 快进耗时徽标：把真机上「松手→出画」的真实秒数显示出来，
+  // 顺便标出播放器用的是 VHS 还是系统原生 HLS。只看 >=300ms 的那种。
+  "var SKT={t0:0};",
+  "function ltTech(){try{var p=window.__ltPlayer;if(p&&p.tech_&&p.tech_.vhs)return 'VHS';}catch(e){}return '原生HLS';}",
+  "function skArm(){",
+  "var v=videoEl();if(!v||v.__ltSk)return;v.__ltSk=1;",
+  "v.addEventListener('seeking',function(){if(!SKT.t0)SKT.t0=performance.now();if(PREF.drag){PREF.pl=1;pfAbort();}});",
+  "v.addEventListener('seeked',function(){",
+  "if(!SKT.t0)return;var ms=performance.now()-SKT.t0;SKT.t0=0;",
+  "if(ms<300)return;",
+  "try{sprBadge('快进耗时 '+(ms/1000).toFixed(1)+' 秒 · '+ltTech()+' · 落点 '+(v.currentTime/60).toFixed(1)+' 分');}catch(e){}",
+  "});",
+  "}",
+  "setInterval(skArm,500);",
+  "if(!window.PointerEvent){",
+  "document.addEventListener('touchstart',function(e){",
+  "if(!grab(e))return;var t=e.touches[0];if(!t)return;var i=idxAt(t.clientX);if(i>=0)prefetchIdx(i);",
+  "},true);",
+  "document.addEventListener('touchmove',function(e){",
+  "if(!PREF.drag)return;var t=e.touches[0];if(t)prefetchSoon(idxAt(t.clientX),80);",
+  "},true);",
+  "document.addEventListener('touchend',function(){PREF.drag=false;},true);",
+  "}",
   // ---- 缩略图 ----
   // 站点 setupSpriteThumbnails()：源只有一路时走 {url: previewList[6]}，否则走 {urlArray}。
   // 插件 videojs-sprite-thumbnails 2.2.4 的关键是每张图覆盖 interval*columns*rows 秒，
@@ -581,6 +669,7 @@ const HOOK = [
   "try{",
   "SPR.tries++;",
   "var root=sprRoot(),vm=root?sprFindVm(root,0):null,p=vm&&vm.luPlayer;",
+  "if(p)window.__ltPlayer=p;",   // 预取/先 seek 都要用播放器实例
   // 只走「提前包住」这一条：站点 setupSpriteThumbnails 调用时把参数换掉。
   // 插件方法第一次调用后会被替换成 ()=>实例、之后传参失效，所以包必须发生在站点调用之前——
   // sprCapture 抓到 previewList 时会同步调用一次 sprTick，正好赶在 Vue 的 watcher 之前。
@@ -648,7 +737,7 @@ const HOOK = [
   "});});}",
   "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
   "dirOf(a,function(dir){",
-  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.cur=-1;PREF.pend=-1;PREF.n=0;PREF.seen={};",
   // 只预取 key + 首段（250KB，挡住首帧的就是这两样）。段 1 留给正常流式，
   // 否则 1.75MB 的预取还没下完播放器就来要，反而更慢。
   "try{fetch(CDN+'/apen/'+a+'/key.php').then(function(r){return r.arrayBuffer();}).catch(function(){});",
