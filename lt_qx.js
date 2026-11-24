@@ -116,7 +116,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v16-2330";
+const VER = "v17-0012";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -489,33 +489,48 @@ const HOOK = [
   // 让播放器自己去拉那一段。松手时它多半已经拉完 → 松手即出画。
   // 站点 playOptions 里 disableSeekWhileScrubbingOnMobile:true 关掉了拖动中 seek，
   // 这里绕过它，但只在「手指停住」时做一次，不连续 seek。
-  "var LSK={timer:0,cx:0,n:0,max:2};",
+  "var LSK={timer:0,cx:0,n:0,max:1};",
   "function liveStop(){if(LSK.timer){clearTimeout(LSK.timer);LSK.timer=0;}}",
   "function liveSeek(){",
   "if(window.__ltLS===0)return;",
   "if(isVhs())return;",                             // VHS 走预取那条路，别两边同时下
-  "if(LSK.n>=LSK.max)return;",                       // 一次手势最多先 seek 两次，别把流量造光
+  "if(LSK.n>=LSK.max)return;",                       // 一次手势只先 seek 一次，别把流量造光
   "var p=window.__ltPlayer;if(!p)return;var v=videoEl();if(!v)return;",
   "var i=idxAt(LSK.cx);if(i<0)return;var t=i*SD;",
   "var d=v.duration;if(d&&isFinite(d)&&t>d-2)t=Math.max(0,d-2);",
   "if(Math.abs(t-v.currentTime)<1.5)return;",                           // 已在附近，别折腾
+  "try{for(var b=0;b<v.buffered.length;b++){if(t>=v.buffered.start(b)&&t<=v.buffered.end(b)-1)return;}}catch(e){}",
   "LSK.n++;try{p.currentTime(t);}catch(e){}",
   "}",
   "function liveSoon(cx){",
   "LSK.cx=cx;if(LSK.timer)return;",
-  "LSK.timer=setTimeout(function(){LSK.timer=0;liveSeek();},450);",
+  "LSK.timer=setTimeout(function(){LSK.timer=0;liveSeek();},350);",
   "}",
   // 快进耗时徽标：把真机上「松手→出画」的真实秒数显示出来，
   // 顺便标出播放器用的是 VHS 还是系统原生 HLS。只看 >=300ms 的那种。
   "var SKT={t0:0};",
+  "function bufAhead(v){try{for(var i=0;i<v.buffered.length;i++){if(v.currentTime>=v.buffered.start(i)&&v.currentTime<=v.buffered.end(i))return Math.round(v.buffered.end(i)-v.currentTime);}}catch(e){}return 0;}",
+  "function skSend(ms){",
+  "if(!window.__ltAV)return;",
+  "var v=videoEl();if(!v)return;",
+  "var q='/__lt/'+window.__ltAV+'.m3u8?sk='+Math.round(ms)+'&tech='+encodeURIComponent(ltTech())+'&bf='+bufAhead(v)+'&dm='+Math.round(v.duration||0)+'&p='+PREF.pl;",
+  "try{fetch(q).catch(function(){});}catch(e){}",
+  "}",
   "function ltTech(){try{var p=window.__ltPlayer;if(p&&p.tech_&&p.tech_.vhs)return 'VHS';}catch(e){}return '原生HLS';}",
   "function skArm(){",
   "var v=videoEl();if(!v||v.__ltSk)return;v.__ltSk=1;",
-  "v.addEventListener('seeking',function(){if(!SKT.t0)SKT.t0=performance.now();if(PREF.drag){PREF.pl=1;pfAbort();}});",
+  "v.addEventListener('seeking',function(){",
+  "if(!SKT.t0)SKT.t0=performance.now();",
+  "if(PREF.drag){PREF.pl=1;pfAbort();}",
+  "if(SKT.iv)clearTimeout(SKT.iv);",
+  "SKT.iv=setTimeout(function(){try{sprBadge('定位中 … '+(v.currentTime/60).toFixed(1)+' 分');}catch(e){}},800);",
+  "});",
   "v.addEventListener('seeked',function(){",
+  "if(SKT.iv){clearTimeout(SKT.iv);SKT.iv=0;}",
   "if(!SKT.t0)return;var ms=performance.now()-SKT.t0;SKT.t0=0;",
   "if(ms<300)return;",
   "try{sprBadge('快进耗时 '+(ms/1000).toFixed(1)+' 秒 · '+ltTech()+' · 落点 '+(v.currentTime/60).toFixed(1)+' 分');}catch(e){}",
+  "try{skSend(ms);}catch(e){}",   // 真机数据回传到自己的收集端
   "});",
   "}",
   "setInterval(skArm,500);",
@@ -670,6 +685,7 @@ const HOOK = [
   "SPR.tries++;",
   "var root=sprRoot(),vm=root?sprFindVm(root,0):null,p=vm&&vm.luPlayer;",
   "if(p)window.__ltPlayer=p;",   // 预取/先 seek 都要用播放器实例
+  "try{if(p&&!p.getChild('LoadingSpinner'))p.addChild('LoadingSpinner');}catch(e){}",   // 站点 loadingSpinner:false，等待时没有任何反馈
   // 只走「提前包住」这一条：站点 setupSpriteThumbnails 调用时把参数换掉。
   // 插件方法第一次调用后会被替换成 ()=>实例、之后传参失效，所以包必须发生在站点调用之前——
   // sprCapture 抓到 previewList 时会同步调用一次 sprTick，正好赶在 Vue 的 watcher 之前。
@@ -782,6 +798,7 @@ const HOOK = [
  *  完整片源
  * ============================================================ */
 const CDN = "https://tez.mihmfg.com";
+const SK_HOST = "149.28.152.148:8080";   // 快进遥测收集端（自己的 VPS，纯 HTTP，只写一行日志）
 // avkey 形态：字母+数字-数字，可能带尾部连字符（真实存在的 SNOS-335-）
 // 实测 23/23 apen 命中，3/3 original_videos 不误判
 /* 目录形态判断。
@@ -1070,6 +1087,25 @@ function main() {
       else detail = "没抓到缩略图数组 · parse " + parses + " 次，最长数组 " + maxArr;
       notifyOnce("spr:" + av, "Lutube " + VER, n > 0 ? "缩略图 " + n + " 张" : "缩略图未取到", detail, 0);
       return $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
+    }
+    // 快进遥测：页面钩子按次带 sk=<毫秒> 来敲一下，转发到自己的收集端。
+    // 这是唯一能拿到真机数字的路子——页面看不到原生 HLS 的分段请求，
+    // 只能量「松手→出画」的真实秒数，再按 tech 判断走 VHS 还是系统原生。
+    const skq = url.match(/[?&]sk=(\d+)/);
+    if (skq) {
+      const qs = String(url).split("?")[1] || "";
+      let dev = "";
+      try {
+        if (typeof $environment !== "undefined" && $environment) {
+          dev = [$environment.system, $environment.device, $environment.appVersion].filter(Boolean).join("/");
+        }
+      } catch (e) {}
+      const fwd = "http://" + SK_HOST + "/sk?av=" + encodeURIComponent(av) + "&" + qs + "&dev=" + encodeURIComponent(dev);
+      const reply = () => $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
+      return Promise.race([
+        qxFetch(fwd, "GET").catch(() => null),
+        new Promise((r) => setTimeout(r, 900)),
+      ]).then(reply);
     }
     const q = url.match(/[?&]dm=([\d.]+)/);
     const dm = (q ? parseFloat(q[1]) : 0) || dmGet(av);
