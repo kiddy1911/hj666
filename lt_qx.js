@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v14-1324
+ * 版本：v15-1933
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v14-1324";
+const VER = "v15-1933";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -448,6 +448,49 @@ const HOOK = [
   // 所以两个都要改：张号（url→urlArray）和每张覆盖秒数（interval）。
   // 实例路径：站点是 Vue2，#app.__vue__ 能拿到根组件，顺着 $children 找到带 luPlayer 的组件。
   // 插件方法第一次调用后会被替换成 ()=>实例、传参失效，所以分「提前包住」和「事后改实例」两条路。
+  // 兜底自绘：有些情况下插件内部的 ready 永远不置位（实测：tooltip 与片源都在，
+  // loadedmetadata 也不抛错，但 ready 一直 false），此时缩略图一张都不会显示。
+  // 这里按同样的几何（每张覆盖 interval*columns*rows 秒，跪内 列主序）自己写 tooltip，
+  // 插件自己好了就完全不插手。
+  "function sprSelf(inst){",
+  "try{",
+  "if(!inst||!inst.options)return;",
+  "var L=SPR.list||[];if(!L.length)return;",
+  "var W=inst.options.width||160,H=inst.options.height||90,C=inst.options.columns||10,R=inst.options.rows||10;",
+  "var per=(inst.options.interval||1)*C*R;if(!(per>0))per=100;",
+  "var picks=function(){",
+  "var tip=document.querySelector('.vjs-mouse-display .vjs-time-tooltip')||document.querySelector('.vjs-time-tooltip');",
+  "var bar=document.querySelector('.vjs-progress-holder');",
+  "return [bar,tip];};",
+  "var onMove=function(e,snap){",
+  "try{",
+  "if(inst.state&&inst.state.ready)return;",
+  "var a=picks(),bar=a[0],tip=a[1];if(!bar||!tip)return;",
+  // 用事件发生瞬间的快照：延后写入时 tooltip 已展开，布局会挪几像素
+  "var r=snap||bar.getBoundingClientRect();if(!r.width)return;",
+  "var dur=0;try{dur=(SPR.pl&&SPR.pl.duration&&SPR.pl.duration())||0;}catch(x){}",
+  "if(!(dur>0))dur=SPR.dur||0;",
+  "if(!(dur>0))return;",
+  "var f=(e.clientX-r.left)/r.width;f=f<0?0:(f>1?1:f);",
+  "var S=f*dur,i=Math.floor(S/per);if(i<0)i=0;if(i>L.length-1)i=L.length-1;",
+  "var t=Math.floor((S-per*i)/(inst.options.interval||1));if(t<0)t=0;if(t>C*R-1)t=C*R-1;",
+  "var col=t%C,row=Math.floor(t/C);",
+  "tip.style.backgroundImage='url(\"'+L[i]+'\")';",
+  "tip.style.backgroundSize=(C*W)+'px '+(R*H)+'px';",
+  "tip.style.backgroundPosition=(-col*W)+'px '+(-row*H)+'px';",
+  "tip.style.width=W+'px';tip.style.height=H+'px';",
+  "SPR.self=1;",
+  "}catch(x){}};",
+  // 冒泡阶段注册（插件挂在进度条元素上，document 冒泡在它之后），
+  // 再放到 setTimeout(0) 里写，确保最终生效的是我们的值。
+  "var later=function(e){",
+  "var bar0=document.querySelector('.vjs-progress-holder');",
+  "var snap=bar0?bar0.getBoundingClientRect():null;",
+  "var cx=e.clientX;",
+  "setTimeout(function(){onMove({clientX:cx},snap);},0);};",
+  "document.addEventListener('mousemove',later,false);",
+  "document.addEventListener('touchmove',later,false);",
+  "}catch(e){}}",
   "var SPR={list:null,orig6:null,dur:0,iv:0,applied:0,wrapped:0,sheets:0,reportedOk:0,reportedFail:0,tries:0,root:null,parses:0,maxArr:0,maxStr:0};",
   "function sprTemplate(L){",
   "var n=L.length,i,k,j,m,re,t,tests;if(n<4)return '';",
@@ -463,11 +506,19 @@ const HOOK = [
   "}}",
   "return '';}",
   // 抓 previewList：同时记 parse 次数和见过的最大数组，抓不到时也能说明卡在哪
+  // 站点 preview 接口返回 {"status","message","data":[url...]}，数组在 data 上；
+  // 另一些接口是 {"data":{"data":[...]}}。两种都要认，否则一次都抓不到。
+  "function sprArrOf(o){",
+  "if(!o||typeof o!=='object')return null;",
+  "var d=o.data;",
+  "if(Array.isArray(d))return d;",
+  "if(d&&typeof d==='object'&&Array.isArray(d.data))return d.data;",
+  "return null;}",
   "function sprCapture(o){",
   "SPR.parses++;",
   "if(SPR.list)return;",
-  "var d=o&&o.data&&o.data.data;",
-  "if(!Array.isArray(d))return;",
+  "var d=sprArrOf(o);",
+  "if(!d)return;",
   "if(d.length>SPR.maxArr)SPR.maxArr=d.length;",
   "if(d.length&&typeof d[0]==='string'&&d[0].length>SPR.maxStr)SPR.maxStr=d[0].length;",
   "if(d.length<2)return;",
@@ -476,6 +527,7 @@ const HOOK = [
   "var dd=SPR.dur||0;",
   "if(dd>0){var iv=dd/(d.length*100);if(iv>0&&isFinite(iv))SPR.iv=iv;}",
   "if(typeof sprTick==='function')try{sprTick();}catch(e){}",
+  "try{sprBadge('Lutube '+(window.__ltVER||'')+' 抓到缩略图 '+SPR.list.length+' 张');}catch(e){}",
   "}",
   "function sprFindVm(vm,depth){",
   "if(!vm||depth>14)return null;",
@@ -510,7 +562,10 @@ const HOOK = [
   "return o;}",
   "function sprReport(){",
   "var n=(SPR.list&&SPR.list.length)||0;",
-  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+n+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)+'&p='+SPR.parses+'&m='+SPR.maxArr).catch(function(){});}catch(e){}",
+  "var q='/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+n+'&tmpl='+SPR.applied",
+  "+'&iv='+Math.round((SPR.iv||1)*100)+'&p='+SPR.parses+'&m='+SPR.maxArr",
+  "+'&vm='+(SPR.vmOk||0)+'&pl='+(SPR.pOk||0)+'&e='+encodeURIComponent(SPR.err||'');",
+  "try{fetch(q).catch(function(){});}catch(e){}",
   "}",
   "function sprBadge(txt){",
   "try{",
@@ -544,6 +599,7 @@ const HOOK = [
   "var rt=function(){try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}};",
   "rt();setTimeout(rt,200);setTimeout(rt,800);setTimeout(rt,2000);",
   "SPR.applied=1;SPR.iv=iv;SPR.inst=inst;SPR.pl=p;",
+  "try{sprSelf(inst);}catch(e){}",
   "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv*SPR.list.length*100)+' 秒');",
   "return inst;};",
   "SPR.wrapped=1;SPR.iv=iv;",
@@ -555,16 +611,23 @@ const HOOK = [
   "SPR.inst.options.interval=iv2;SPR.iv=iv2;",
   "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv2*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv2*SPR.list.length*100)+' 秒');",
   "}}",
+  "}catch(e){SPR.err=String((e&&e.message)||e).slice(0,60);}",
+  // 上报单独一个 try：上面任何一步抛错都不能连上报一起吞掉，
+  // 否则表现就是「页面没任何提示」，根本无从判断卡在哪一步。
+  "try{",
+  "SPR.pOk=p?1:0;SPR.vmOk=vm?1:0;",
   "if(window.__ltAV){",
   "if((SPR.applied||SPR.wrapped)&&!SPR.reportedOk){SPR.reportedOk=1;sprReport();}",
   "else if(!SPR.applied&&!SPR.wrapped&&SPR.tries>=20&&!SPR.reportedFail){SPR.reportedFail=1;sprReport();}",
   "}",
-  "}catch(e){}}",
+  "}catch(e){}",
+  "}",
   // 播放器节点插入 DOM 的时刻早于 ready 回调，用它兜住「列表先到、播放器后建」的顺序，
   // 否则站点在 ready 里直接调 setupSpriteThumbnails，我们的包装就晚了一步。
   "try{if(window.MutationObserver){var _mo=new MutationObserver(function(){if(SPR.list)try{sprTick();}catch(e){}});",
   "_mo.observe(document.documentElement,{childList:true,subtree:true});}}catch(e){}",
   "setInterval(sprTick,120);",
+  "setTimeout(function(){try{if(!SPR.applied)sprBadge('Lutube '+(window.__ltVER||'?')+' 钩子已生效 · 打开视频拖进度条看此处');}catch(e){}},2500);",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
@@ -884,7 +947,7 @@ function clean(html) {
   const anchor = /<script\s+type="module"/;
   if (anchor.test(h)) {
     hit.inject = 1;
-    h = h.replace(anchor, HOOK + '<script type="module"');
+    h = h.replace(anchor, '<script>window.__ltVER="' + VER + '";</script>' + HOOK + '<script type="module"');
   }
   return { html: h, hit };
 }
