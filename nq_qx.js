@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v13-1107
+ * 版本：v14-1324
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v13-1107";
+const VER = "v14-1324";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -498,9 +498,12 @@ const HOOK = [
   "var d=0;try{d=(p&&p.duration&&p.duration())||0;}catch(e){}",
   "if(!(d>0))d=SPR.dur||0;",
   "if(!(d>0))return 1;",
+  // 实测服务端就是 100 秒一张（1 秒一格、10x10），张数 ≈ ceil(时长/100)。
+  "var need=Math.ceil(d/100);",
+  "if(n>=need*0.8)return 1;",
+  // 张数明显更粗才按实际张数平摊，其余保持默认
   "var iv=d/(n*100);",
-  "if(!(iv>0.02)||iv>5)return 1;",
-  "return iv;}",
+  "return (iv>0.02&&iv<5)?iv:1;}",
   "function sprOpts(opts,iv){",
   "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv||1};",
   "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
@@ -580,9 +583,9 @@ const HOOK = [
   "head(CDN+'/original_videos/'+av+'/ts/'+av+'-0.ts').then(function(st2){",
   "cb((st2===200||st2===206)?'original_videos':'apen');",
   "});});}",
-  "if(API[a]){d.urls.low=API[a];d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
+  "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
   "dirOf(a,function(dir){",
-  "if(dir==='apen'){d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
   // 只预取 key + 首段（250KB，挡住首帧的就是这两样）。段 1 留给正常流式，
   // 否则 1.75MB 的预取还没下完播放器就来要，反而更慢。
   "try{fetch(CDN+'/apen/'+a+'/key.php').then(function(r){return r.arrayBuffer();}).catch(function(){});",
@@ -592,7 +595,7 @@ const HOOK = [
   "deriveIV(a,'original_videos',function(ivh){",
   "if(!ivh)return;",
   "var u=u0+'&iv='+ivh;API[a]=u;",
-  "if(d.urls){d.urls.low=u;d.urls.high='';d.urls.intro='';d.__lt=1;}",
+  "if(d.urls){d.urls.low=u;d.urls.high=u;d.urls.intro='';d.__lt=1;}",
   // 播放器可能已经拿着 no-iv 的地址起播了。
   // iOS 原生 HLS 下 video.src 就是 m3u8 地址，直接换成带 iv 的即可。
   "var tries=0;",
@@ -604,7 +607,7 @@ const HOOK = [
   "if(tries>20)clearInterval(fix);",
   "},500);",
   "});",
-  "d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;",
+  "d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;",
   "});",
   "return true;}",
   "JSON.parse=function(s,rev){",
