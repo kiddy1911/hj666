@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v12-0829
+ * 版本：v13-1107
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v12-0829";
+const VER = "v13-1107";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -497,9 +497,10 @@ const HOOK = [
   "var n=(SPR.list&&SPR.list.length)||0;if(!n)return 1;",
   "var d=0;try{d=(p&&p.duration&&p.duration())||0;}catch(e){}",
   "if(!(d>0))d=SPR.dur||0;",
-  "if(!(d>0))return SPR.iv||1;",
+  "if(!(d>0))return 1;",
   "var iv=d/(n*100);",
-  "return (iv>0&&isFinite(iv))?iv:1;}",
+  "if(!(iv>0.02)||iv>5)return 1;",
+  "return iv;}",
   "function sprOpts(opts,iv){",
   "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv||1};",
   "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
@@ -508,6 +509,16 @@ const HOOK = [
   "var n=(SPR.list&&SPR.list.length)||0;",
   "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+n+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)+'&p='+SPR.parses+'&m='+SPR.maxArr).catch(function(){});}catch(e){}",
   "}",
+  "function sprBadge(txt){",
+  "try{",
+  "var d=document.getElementById('lt-spr-badge');",
+  "if(!d){d=document.createElement('div');d.id='lt-spr-badge';",
+  "d.style.cssText='position:fixed;right:8px;bottom:72px;z-index:2147483647;background:rgba(0,0,0,.8);color:#fff;font:12px/1.6 -apple-system,sans-serif;padding:6px 10px;border-radius:8px;max-width:72vw;pointer-events:none;white-space:pre-line';",
+  "document.body.appendChild(d);}",
+  "d.textContent=txt;",
+  "clearTimeout(d.__t);",
+  "d.__t=setTimeout(function(){d.style.transition='opacity .5s';d.style.opacity='0';setTimeout(function(){if(d.parentNode)d.parentNode.removeChild(d);},600);},12000);",
+  "}catch(e){}}",
   "function sprTick(){",
   "try{",
   "SPR.tries++;",
@@ -529,22 +540,35 @@ const HOOK = [
   // 所以分几个时间点重放，直到 ready 置位为止。
   "var rt=function(){try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}};",
   "rt();setTimeout(rt,200);setTimeout(rt,800);setTimeout(rt,2000);",
-  "SPR.applied=1;SPR.iv=iv;",
+  "SPR.applied=1;SPR.iv=iv;SPR.inst=inst;SPR.pl=p;",
+  "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv*SPR.list.length*100)+' 秒');",
   "return inst;};",
   "SPR.wrapped=1;SPR.iv=iv;",
   "}",
+  // 播放器拿到真实时长后重算一次：抓数组时若还没 loadedmetadata，iv 只能是估算
+  "if(SPR.inst&&SPR.pl){",
+  "var iv2=sprIv(SPR.pl);",
+  "if(iv2>0&&Math.abs(iv2-(SPR.inst.options.interval||1))>0.001){",
+  "SPR.inst.options.interval=iv2;SPR.iv=iv2;",
+  "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv2*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv2*SPR.list.length*100)+' 秒');",
+  "}}",
   "if(window.__ltAV){",
   "if((SPR.applied||SPR.wrapped)&&!SPR.reportedOk){SPR.reportedOk=1;sprReport();}",
   "else if(!SPR.applied&&!SPR.wrapped&&SPR.tries>=20&&!SPR.reportedFail){SPR.reportedFail=1;sprReport();}",
   "}",
   "}catch(e){}}",
-  "setInterval(sprTick,300);",
+  // 播放器节点插入 DOM 的时刻早于 ready 回调，用它兜住「列表先到、播放器后建」的顺序，
+  // 否则站点在 ready 里直接调 setupSpriteThumbnails，我们的包装就晚了一步。
+  "try{if(window.MutationObserver){var _mo=new MutationObserver(function(){if(SPR.list)try{sprTick();}catch(e){}});",
+  "_mo.observe(document.documentElement,{childList:true,subtree:true});}}catch(e){}",
+  "setInterval(sprTick,120);",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
   "if(!/^[A-Za-z0-9_.-]+$/.test(a))return false;",
   "var dm=Number(d.duration)||0;",
-  "SPR.dur=dm*60;",
+  "SPR.dm=dm;",
+  "SPR.dur=dm>0?(dm<1000?dm*60:dm):0;",
   // 判目录不能看 avkey 形态：FJIN-159-CN 形似 apen，实际也在 apen；
   // 形似 original_videos 的也可能在 apen。唯一可靠判据是 CDN 上哪个目录存在。
   "var u0='/__lt/'+a+'.m3u8?dm='+dm;",
