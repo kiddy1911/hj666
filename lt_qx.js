@@ -116,7 +116,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v17-0012";
+const VER = "v18-0100";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -653,12 +653,14 @@ const HOOK = [
   "var d=0;try{d=(p&&p.duration&&p.duration())||0;}catch(e){}",
   "if(!(d>0))d=SPR.dur||0;",
   "if(!(d>0))return 1;",
-  // 实测服务端就是 100 秒一张（1 秒一格、10x10），张数 ≈ ceil(时长/100)。
-  "var need=Math.ceil(d/100);",
-  "if(n>=need*0.8)return 1;",
-  // 张数明显更粗才按实际张数平摊，其余保持默认
+  // 站点自己是 spriteThumbnails({urlArray,width:160,height:90,columns:10,rows:10})，
+  // 不传 interval → 插件默认 1 秒一格，也就是每张 100 秒。所以只要服务端给的张数
+  // 够覆盖整片（n*100 >= d），就保持 1，跟站点一致。
+  // 只有在张数明显不够时才按实际张数平摊（说明服务端用了更粗的步长），
+  // 否则整片尾部会越走越偏——之前用 n>=need*0.8 判断，n 少 20% 也会误判成 1。
+  "if(n*100>=d*0.995)return 1;",
   "var iv=d/(n*100);",
-  "return (iv>0.02&&iv<5)?iv:1;}",
+  "return (iv>0.05&&iv<20)?iv:1;}",
   "function sprOpts(opts,iv){",
   "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv||1};",
   "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
@@ -1086,6 +1088,9 @@ function main() {
       else if (n > 0) detail = "抓到 " + n + " 张，但没找到播放器";
       else detail = "没抓到缩略图数组 · parse " + parses + " 次，最长数组 " + maxArr;
       notifyOnce("spr:" + av, "Lutube " + VER, n > 0 ? "缩略图 " + n + " 张" : "缩略图未取到", detail, 0);
+      try {
+        qxFetch("http://" + SK_HOST + "/sk?av=" + encodeURIComponent(av) + "&spr=" + n + "&" + (String(url).split("?")[1] || ""), "GET").catch(() => null);
+      } catch (e) {}
       return $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
     }
     // 快进遥测：页面钩子按次带 sk=<毫秒> 来敲一下，转发到自己的收集端。
