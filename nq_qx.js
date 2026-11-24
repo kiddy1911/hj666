@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v11-0812
+ * 版本：v12-0829
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v11-0812";
+const VER = "v12-0829";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -448,7 +448,7 @@ const HOOK = [
   // 所以两个都要改：张号（url→urlArray）和每张覆盖秒数（interval）。
   // 实例路径：站点是 Vue2，#app.__vue__ 能拿到根组件，顺着 $children 找到带 luPlayer 的组件。
   // 插件方法第一次调用后会被替换成 ()=>实例、传参失效，所以分「提前包住」和「事后改实例」两条路。
-  "var SPR={list:null,orig6:null,dur:0,applied:0,sheets:0,iv:0,reported:0};",
+  "var SPR={list:null,orig6:null,dur:0,iv:0,applied:0,wrapped:0,sheets:0,reportedOk:0,reportedFail:0,tries:0,root:null,parses:0,maxArr:0,maxStr:0};",
   "function sprTemplate(L){",
   "var n=L.length,i,k,j,m,re,t,tests;if(n<4)return '';",
   "for(i=0;i<n;i++){",
@@ -462,13 +462,20 @@ const HOOK = [
   "if(ok)return t;",
   "}}",
   "return '';}",
+  // 抓 previewList：同时记 parse 次数和见过的最大数组，抓不到时也能说明卡在哪
   "function sprCapture(o){",
-  "if(SPR.list||!o||!o.data||!Array.isArray(o.data.data)||o.data.data.length<2)return;",
-  "var a=o.data.data,i;",
-  "for(i=0;i<a.length;i++){if(typeof a[i]!=='string')return;}",
-  "SPR.list=a;SPR.sheets=a.length;SPR.orig6=a[6];",
-  "var d=SPR.dur||0;",
-  "if(d>0){var iv=d/(a.length*100);if(iv>0&&isFinite(iv))SPR.iv=iv;}",
+  "SPR.parses++;",
+  "if(SPR.list)return;",
+  "var d=o&&o.data&&o.data.data;",
+  "if(!Array.isArray(d))return;",
+  "if(d.length>SPR.maxArr)SPR.maxArr=d.length;",
+  "if(d.length&&typeof d[0]==='string'&&d[0].length>SPR.maxStr)SPR.maxStr=d[0].length;",
+  "if(d.length<2)return;",
+  "var i;for(i=0;i<d.length;i++){if(typeof d[i]!=='string')return;}",
+  "SPR.list=d;SPR.sheets=d.length;SPR.orig6=d[6];",
+  "var dd=SPR.dur||0;",
+  "if(dd>0){var iv=dd/(d.length*100);if(iv>0&&isFinite(iv))SPR.iv=iv;}",
+  "if(typeof sprTick==='function')try{sprTick();}catch(e){}",
   "}",
   "function sprFindVm(vm,depth){",
   "if(!vm||depth>14)return null;",
@@ -476,41 +483,60 @@ const HOOK = [
   "var ch=vm.$children||[];",
   "for(var i=0;i<ch.length;i++){var r=sprFindVm(ch[i],depth+1);if(r)return r;}",
   "return null;}",
-  "function sprOpts(opts){",
-  "var iv=SPR.iv||1;",
-  "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv};",
-  "if(SPR.orig6!==null&&SPR.list[6]!==SPR.orig6)o.urlArray[6]=SPR.orig6;",
+  // Vue2 根实例不一定挂在 #app 上，退化到「全文档找带 __vue__ 的节点」，再往上爬到根
+  "function sprRoot(){",
+  "if(SPR.root)return SPR.root;",
+  "var el=document.getElementById('app'),vm=el&&el.__vue__,i,all;",
+  "if(!vm){all=document.querySelectorAll('*');",
+  "for(i=0;i<all.length&&i<6000;i++){if(all[i].__vue__){vm=all[i].__vue__;break;}}}",
+  "if(!vm)return null;",
+  "var g=0;while(vm.$parent&&g++<25)vm=vm.$parent;",
+  "SPR.root=vm;return vm;}",
+  // 每张覆盖秒数：优先用播放器真实时长，比接口里的分钟数准
+  "function sprIv(p){",
+  "var n=(SPR.list&&SPR.list.length)||0;if(!n)return 1;",
+  "var d=0;try{d=(p&&p.duration&&p.duration())||0;}catch(e){}",
+  "if(!(d>0))d=SPR.dur||0;",
+  "if(!(d>0))return SPR.iv||1;",
+  "var iv=d/(n*100);",
+  "return (iv>0&&isFinite(iv))?iv:1;}",
+  "function sprOpts(opts,iv){",
+  "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv||1};",
+  "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
   "return o;}",
+  "function sprReport(){",
+  "var n=(SPR.list&&SPR.list.length)||0;",
+  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+n+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)+'&p='+SPR.parses+'&m='+SPR.maxArr).catch(function(){});}catch(e){}",
+  "}",
   "function sprTick(){",
   "try{",
-  "var el=document.getElementById('app')||document.querySelector('#app');",
-  "var root=el&&el.__vue__;if(!root)return;",
-  "var vm=sprFindVm(root,0);if(!vm)return;",
-  "var p=vm.luPlayer;",
-  "if(!SPR.list||SPR.list.length<2)return;",
-  "var ap=p.activePlugins_&&p.activePlugins_.spriteThumbnails;",
-  "if(ap){",
-  "if(p.__ltSprDone)return;",
-  "var inst=null;try{inst=p.spriteThumbnails();}catch(e){}",
-  "var o=inst&&inst.options;",
-  "if(o){o.urlArray=SPR.list.slice();o.url='';o.interval=SPR.iv||1;",
-  "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
-  "if(inst.state&&!inst.state.ready)try{p.trigger('loadedmetadata');}catch(e){}",
-  "p.__ltSprDone=1;SPR.applied=1;}}",
-  "else if(!p.__ltSpr&&typeof p.spriteThumbnails==='function'){",
-  "p.__ltSpr=1;var orig=p.spriteThumbnails;",
+  "SPR.tries++;",
+  "var root=sprRoot(),vm=root?sprFindVm(root,0):null,p=vm&&vm.luPlayer;",
+  // 只走「提前包住」这一条：站点 setupSpriteThumbnails 调用时把参数换掉。
+  // 插件方法第一次调用后会被替换成 ()=>实例、之后传参失效，所以包必须发生在站点调用之前——
+  // sprCapture 抓到 previewList 时会同步调用一次 sprTick，正好赶在 Vue 的 watcher 之前。
+  "if(p&&SPR.list&&SPR.list.length>1&&!p.__ltSpr&&typeof p.spriteThumbnails==='function'){",
+  "var iv=sprIv(p);",
+  "var orig=p.spriteThumbnails;",
+  "p.__ltSpr=1;",
   "p.spriteThumbnails=function(opts){",
   "var inst;",
-  "try{if(SPR.list&&SPR.list.length>1)inst=orig.call(p,sprOpts(opts));}catch(e){}",
+  "try{inst=orig.call(p,sprOpts(opts,iv));}catch(e){}",
   "if(!inst)return orig.call(p,opts);",
-  // 插件的 ready 只在 loadstart/loadedmetadata 里置位；站点调用时这两个事件可能已经过了，
-  // 那就重放一次 loadedmetadata，让插件拿到 tooltip 引用并绑定 mousemove。
-  "try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}",
+  // 插件的 x/$（tooltip 引用）和 ready 只在 loadedmetadata 里赋值；站点调用时该事件可能已经过了，
+  // 先重放一次事件，不行就直接补引用置位。
+  // 插件的 E 处理器挂在 player.ready 回调里才绑定，实例刚建时可能还没绑上，
+  // 所以分几个时间点重放，直到 ready 置位为止。
+  "var rt=function(){try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}};",
+  "rt();setTimeout(rt,200);setTimeout(rt,800);setTimeout(rt,2000);",
+  "SPR.applied=1;SPR.iv=iv;",
   "return inst;};",
-  "SPR.applied=1;",
+  "SPR.wrapped=1;SPR.iv=iv;",
   "}",
-  "if(SPR.applied&&!SPR.reported&&window.__ltAV){SPR.reported=1;",
-  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+SPR.sheets+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)).catch(function(){});}catch(e){}}",
+  "if(window.__ltAV){",
+  "if((SPR.applied||SPR.wrapped)&&!SPR.reportedOk){SPR.reportedOk=1;sprReport();}",
+  "else if(!SPR.applied&&!SPR.wrapped&&SPR.tries>=20&&!SPR.reportedFail){SPR.reportedFail=1;sprReport();}",
+  "}",
   "}catch(e){}}",
   "setInterval(sprTick,300);",
   "function patch(d){",
@@ -791,13 +817,16 @@ const M3U8_HEADERS = {
 
 /* 同一部片只弹一次通知。
    列表被反复请求时，$notify 会连发，既吵又拖慢响应。 */
-function notifyOnce(k, a, b, c) {
+function notifyOnce(k, a, b, c, win) {
   // QX 每次请求都是全新的脚本实例，内存变量不跨请求，只能用 $prefs。
+  // win 传 0 表示不去重：诊断类通知必须每次都出现，否则同一个片子看第二遍就静音，
+  // 会被误判成「脚本没生效」。
+  const w = typeof win === "number" ? win : 600000;
   try {
-    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+    if (w > 0 && typeof $prefs !== "undefined" && $prefs.valueForKey) {
       const last = parseInt($prefs.valueForKey("lt_nf_" + k), 10) || 0;
       const now = Date.now();
-      if (now - last < 600000) return;
+      if (now - last < w) return;
       $prefs.setValueForKey(String(now), "lt_nf_" + k);
     }
   } catch (e) {}
@@ -852,8 +881,15 @@ function main() {
       const ok = /[?&]tmpl=1/.test(url);
       const ivm = url.match(/[?&]iv=(\d+)/);
       const sec = ivm ? (parseInt(ivm[1], 10) || 100) : 100;
-      notifyOnce("spr:" + av, "Lutube " + VER, "缩略图 " + n + " 张",
-        ok ? "已接管播放器 · 每张 " + sec + " 秒" : "未找到播放器实例，仍是原样");
+      const pm = url.match(/[?&]p=(\d+)/);
+      const mm = url.match(/[?&]m=(\d+)/);
+      const parses = pm ? parseInt(pm[1], 10) : 0;
+      const maxArr = mm ? parseInt(mm[1], 10) : 0;
+      let detail;
+      if (n > 0 && ok) detail = "已接管播放器 · 每张 " + sec + " 秒";
+      else if (n > 0) detail = "抓到 " + n + " 张，但没找到播放器";
+      else detail = "没抓到缩略图数组 · parse " + parses + " 次，最长数组 " + maxArr;
+      notifyOnce("spr:" + av, "Lutube " + VER, n > 0 ? "缩略图 " + n + " 张" : "缩略图未取到", detail, 0);
       return $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
     }
     const q = url.match(/[?&]dm=([\d.]+)/);
