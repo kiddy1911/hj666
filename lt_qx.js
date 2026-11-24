@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v9-2350
+ * 版本：v14-1324
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,11 +99,23 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v9-2350";
+const VER = "v14-1324";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
- * ============================================================ */
+ * ============================================================ *
+ * ══ v10-0800：快进缩略图 ══════════════════════════
+ *   站点 setupSpriteThumbnails() 按源数量分支：
+ *     videoSrcCount===1 → spriteThumbnails({url: previewList[6]})   ← 解锁后走这条
+ *     否则             → spriteThumbnails({urlArray: previewList})
+ *   插件 videojs-sprite-thumbnails 2.2.4 取图是
+ *     k(p) = urlArray.length ? urlArray[p] : url.replace("{index}", p)
+ *   每张图覆盖 interval*columns*rows 秒（默认 100s），只喂第 7 张时任何时刻都画那一张，
+ *   所以缩略图整条时间轴都错。
+ *   修法：把 previewList[6] 换成带 {index} 的模板，插件按张号取值。
+ *   只有「张数 ≈ 时长/100」时才改（张数偏少说明服务端用了更大 interval）。
+ *   顺手带一条 spr= 请求回来，让 QX 层弹一行诊断。
+ */
 function md5bytes(s) {
   function add(a, b) { return (a + b) >>> 0; }
   function rol(n, c) { return ((n << c) | (n >>> (32 - c))) >>> 0; }
@@ -428,11 +440,138 @@ const HOOK = [
   "},true);",
   "document.addEventListener('pointerup',function(){PREF.drag=false;},true);",
   "document.addEventListener('pointercancel',function(){PREF.drag=false;},true);",
+  // ---- 缩略图 ----
+  // 站点 setupSpriteThumbnails()：源只有一路时走 {url: previewList[6]}，否则走 {urlArray}。
+  // 插件 videojs-sprite-thumbnails 2.2.4 的关键是每张图覆盖 interval*columns*rows 秒，
+  // 默认 interval=1 → 100 秒/张。而服务端是把全部张数平摊到整片时长：
+  // 142 分钟 / 86 张 ≈ 99.07 秒/张，插件按 100 秒算，越往后偏得越多（尾段约 1 分钟）。
+  // 所以两个都要改：张号（url→urlArray）和每张覆盖秒数（interval）。
+  // 实例路径：站点是 Vue2，#app.__vue__ 能拿到根组件，顺着 $children 找到带 luPlayer 的组件。
+  // 插件方法第一次调用后会被替换成 ()=>实例、传参失效，所以分「提前包住」和「事后改实例」两条路。
+  "var SPR={list:null,orig6:null,dur:0,iv:0,applied:0,wrapped:0,sheets:0,reportedOk:0,reportedFail:0,tries:0,root:null,parses:0,maxArr:0,maxStr:0};",
+  "function sprTemplate(L){",
+  "var n=L.length,i,k,j,m,re,t,tests;if(n<4)return '';",
+  "for(i=0;i<n;i++){",
+  "if(typeof L[i]!=='string')continue;",
+  "re=/\\d+/g;",
+  "while((m=re.exec(L[i]))){",
+  "if(m[0]!==String(i))continue;",
+  "t=L[i].slice(0,m.index)+'{index}'+L[i].slice(m.index+m[0].length);",
+  "tests=[0,n-1,Math.floor(n/2)];var ok=1;",
+  "for(k=0;k<tests.length;k++){j=tests[k];if(t.replace('{index}',String(j))!==L[j]){ok=0;break;}}",
+  "if(ok)return t;",
+  "}}",
+  "return '';}",
+  // 抓 previewList：同时记 parse 次数和见过的最大数组，抓不到时也能说明卡在哪
+  "function sprCapture(o){",
+  "SPR.parses++;",
+  "if(SPR.list)return;",
+  "var d=o&&o.data&&o.data.data;",
+  "if(!Array.isArray(d))return;",
+  "if(d.length>SPR.maxArr)SPR.maxArr=d.length;",
+  "if(d.length&&typeof d[0]==='string'&&d[0].length>SPR.maxStr)SPR.maxStr=d[0].length;",
+  "if(d.length<2)return;",
+  "var i;for(i=0;i<d.length;i++){if(typeof d[i]!=='string')return;}",
+  "SPR.list=d;SPR.sheets=d.length;SPR.orig6=d[6];",
+  "var dd=SPR.dur||0;",
+  "if(dd>0){var iv=dd/(d.length*100);if(iv>0&&isFinite(iv))SPR.iv=iv;}",
+  "if(typeof sprTick==='function')try{sprTick();}catch(e){}",
+  "}",
+  "function sprFindVm(vm,depth){",
+  "if(!vm||depth>14)return null;",
+  "if(vm.luPlayer&&typeof vm.luPlayer.spriteThumbnails==='function')return vm;",
+  "var ch=vm.$children||[];",
+  "for(var i=0;i<ch.length;i++){var r=sprFindVm(ch[i],depth+1);if(r)return r;}",
+  "return null;}",
+  // Vue2 根实例不一定挂在 #app 上，退化到「全文档找带 __vue__ 的节点」，再往上爬到根
+  "function sprRoot(){",
+  "if(SPR.root)return SPR.root;",
+  "var el=document.getElementById('app'),vm=el&&el.__vue__,i,all;",
+  "if(!vm){all=document.querySelectorAll('*');",
+  "for(i=0;i<all.length&&i<6000;i++){if(all[i].__vue__){vm=all[i].__vue__;break;}}}",
+  "if(!vm)return null;",
+  "var g=0;while(vm.$parent&&g++<25)vm=vm.$parent;",
+  "SPR.root=vm;return vm;}",
+  // 每张覆盖秒数：优先用播放器真实时长，比接口里的分钟数准
+  "function sprIv(p){",
+  "var n=(SPR.list&&SPR.list.length)||0;if(!n)return 1;",
+  "var d=0;try{d=(p&&p.duration&&p.duration())||0;}catch(e){}",
+  "if(!(d>0))d=SPR.dur||0;",
+  "if(!(d>0))return 1;",
+  // 实测服务端就是 100 秒一张（1 秒一格、10x10），张数 ≈ ceil(时长/100)。
+  "var need=Math.ceil(d/100);",
+  "if(n>=need*0.8)return 1;",
+  // 张数明显更粗才按实际张数平摊，其余保持默认
+  "var iv=d/(n*100);",
+  "return (iv>0.02&&iv<5)?iv:1;}",
+  "function sprOpts(opts,iv){",
+  "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv||1};",
+  "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
+  "return o;}",
+  "function sprReport(){",
+  "var n=(SPR.list&&SPR.list.length)||0;",
+  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+n+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)+'&p='+SPR.parses+'&m='+SPR.maxArr).catch(function(){});}catch(e){}",
+  "}",
+  "function sprBadge(txt){",
+  "try{",
+  "var d=document.getElementById('lt-spr-badge');",
+  "if(!d){d=document.createElement('div');d.id='lt-spr-badge';",
+  "d.style.cssText='position:fixed;right:8px;bottom:72px;z-index:2147483647;background:rgba(0,0,0,.8);color:#fff;font:12px/1.6 -apple-system,sans-serif;padding:6px 10px;border-radius:8px;max-width:72vw;pointer-events:none;white-space:pre-line';",
+  "document.body.appendChild(d);}",
+  "d.textContent=txt;",
+  "clearTimeout(d.__t);",
+  "d.__t=setTimeout(function(){d.style.transition='opacity .5s';d.style.opacity='0';setTimeout(function(){if(d.parentNode)d.parentNode.removeChild(d);},600);},12000);",
+  "}catch(e){}}",
+  "function sprTick(){",
+  "try{",
+  "SPR.tries++;",
+  "var root=sprRoot(),vm=root?sprFindVm(root,0):null,p=vm&&vm.luPlayer;",
+  // 只走「提前包住」这一条：站点 setupSpriteThumbnails 调用时把参数换掉。
+  // 插件方法第一次调用后会被替换成 ()=>实例、之后传参失效，所以包必须发生在站点调用之前——
+  // sprCapture 抓到 previewList 时会同步调用一次 sprTick，正好赶在 Vue 的 watcher 之前。
+  "if(p&&SPR.list&&SPR.list.length>1&&!p.__ltSpr&&typeof p.spriteThumbnails==='function'){",
+  "var iv=sprIv(p);",
+  "var orig=p.spriteThumbnails;",
+  "p.__ltSpr=1;",
+  "p.spriteThumbnails=function(opts){",
+  "var inst;",
+  "try{inst=orig.call(p,sprOpts(opts,iv));}catch(e){}",
+  "if(!inst)return orig.call(p,opts);",
+  // 插件的 x/$（tooltip 引用）和 ready 只在 loadedmetadata 里赋值；站点调用时该事件可能已经过了，
+  // 先重放一次事件，不行就直接补引用置位。
+  // 插件的 E 处理器挂在 player.ready 回调里才绑定，实例刚建时可能还没绑上，
+  // 所以分几个时间点重放，直到 ready 置位为止。
+  "var rt=function(){try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}};",
+  "rt();setTimeout(rt,200);setTimeout(rt,800);setTimeout(rt,2000);",
+  "SPR.applied=1;SPR.iv=iv;SPR.inst=inst;SPR.pl=p;",
+  "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv*SPR.list.length*100)+' 秒');",
+  "return inst;};",
+  "SPR.wrapped=1;SPR.iv=iv;",
+  "}",
+  // 播放器拿到真实时长后重算一次：抓数组时若还没 loadedmetadata，iv 只能是估算
+  "if(SPR.inst&&SPR.pl){",
+  "var iv2=sprIv(SPR.pl);",
+  "if(iv2>0&&Math.abs(iv2-(SPR.inst.options.interval||1))>0.001){",
+  "SPR.inst.options.interval=iv2;SPR.iv=iv2;",
+  "sprBadge('缩略图 '+SPR.list.length+' 张 · 每张 '+(iv2*100).toFixed(1)+' 秒 · 全长 '+Math.round(iv2*SPR.list.length*100)+' 秒');",
+  "}}",
+  "if(window.__ltAV){",
+  "if((SPR.applied||SPR.wrapped)&&!SPR.reportedOk){SPR.reportedOk=1;sprReport();}",
+  "else if(!SPR.applied&&!SPR.wrapped&&SPR.tries>=20&&!SPR.reportedFail){SPR.reportedFail=1;sprReport();}",
+  "}",
+  "}catch(e){}}",
+  // 播放器节点插入 DOM 的时刻早于 ready 回调，用它兜住「列表先到、播放器后建」的顺序，
+  // 否则站点在 ready 里直接调 setupSpriteThumbnails，我们的包装就晚了一步。
+  "try{if(window.MutationObserver){var _mo=new MutationObserver(function(){if(SPR.list)try{sprTick();}catch(e){}});",
+  "_mo.observe(document.documentElement,{childList:true,subtree:true});}}catch(e){}",
+  "setInterval(sprTick,120);",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
   "if(!/^[A-Za-z0-9_.-]+$/.test(a))return false;",
   "var dm=Number(d.duration)||0;",
+  "SPR.dm=dm;",
+  "SPR.dur=dm>0?(dm<1000?dm*60:dm):0;",
   // 判目录不能看 avkey 形态：FJIN-159-CN 形似 apen，实际也在 apen；
   // 形似 original_videos 的也可能在 apen。唯一可靠判据是 CDN 上哪个目录存在。
   "var u0='/__lt/'+a+'.m3u8?dm='+dm;",
@@ -444,9 +583,9 @@ const HOOK = [
   "head(CDN+'/original_videos/'+av+'/ts/'+av+'-0.ts').then(function(st2){",
   "cb((st2===200||st2===206)?'original_videos':'apen');",
   "});});}",
-  "if(API[a]){d.urls.low=API[a];d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
+  "if(API[a]){d.urls.low=API[a];d.urls.high=API[a];d.urls.intro='';d.__lt=1;window.__ltAV=a;return true;}",
   "dirOf(a,function(dir){",
-  "if(dir==='apen'){d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
+  "if(dir==='apen'){d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;PREF.av=a;PREF.dir=dir;PREF.done=-1;PREF.pend=-1;PREF.n=0;",
   // 只预取 key + 首段（250KB，挡住首帧的就是这两样）。段 1 留给正常流式，
   // 否则 1.75MB 的预取还没下完播放器就来要，反而更慢。
   "try{fetch(CDN+'/apen/'+a+'/key.php').then(function(r){return r.arrayBuffer();}).catch(function(){});",
@@ -456,7 +595,7 @@ const HOOK = [
   "deriveIV(a,'original_videos',function(ivh){",
   "if(!ivh)return;",
   "var u=u0+'&iv='+ivh;API[a]=u;",
-  "if(d.urls){d.urls.low=u;d.urls.high='';d.urls.intro='';d.__lt=1;}",
+  "if(d.urls){d.urls.low=u;d.urls.high=u;d.urls.intro='';d.__lt=1;}",
   // 播放器可能已经拿着 no-iv 的地址起播了。
   // iOS 原生 HLS 下 video.src 就是 m3u8 地址，直接换成带 iv 的即可。
   "var tries=0;",
@@ -468,7 +607,7 @@ const HOOK = [
   "if(tries>20)clearInterval(fix);",
   "},500);",
   "});",
-  "d.urls.low=u0;d.urls.high='';d.urls.intro='';d.__lt=1;window.__ltAV=a;",
+  "d.urls.low=u0;d.urls.high=u0;d.urls.intro='';d.__lt=1;window.__ltAV=a;",
   "});",
   "return true;}",
   "JSON.parse=function(s,rev){",
@@ -479,6 +618,7 @@ const HOOK = [
   "else if(has(o,'data')){",
   "if(!vip(o.data)){if(!patch(o.data)){if(isAd(o.data))o.data={};}}",
   "}",
+  "sprCapture(o);",
   "scrub(o,0);",
   "}",
   "}catch(e){}",
@@ -704,13 +844,16 @@ const M3U8_HEADERS = {
 
 /* 同一部片只弹一次通知。
    列表被反复请求时，$notify 会连发，既吵又拖慢响应。 */
-function notifyOnce(k, a, b, c) {
+function notifyOnce(k, a, b, c, win) {
   // QX 每次请求都是全新的脚本实例，内存变量不跨请求，只能用 $prefs。
+  // win 传 0 表示不去重：诊断类通知必须每次都出现，否则同一个片子看第二遍就静音，
+  // 会被误判成「脚本没生效」。
+  const w = typeof win === "number" ? win : 600000;
   try {
-    if (typeof $prefs !== "undefined" && $prefs.valueForKey) {
+    if (w > 0 && typeof $prefs !== "undefined" && $prefs.valueForKey) {
       const last = parseInt($prefs.valueForKey("lt_nf_" + k), 10) || 0;
       const now = Date.now();
-      if (now - last < 600000) return;
+      if (now - last < w) return;
       $prefs.setValueForKey(String(now), "lt_nf_" + k);
     }
   } catch (e) {}
@@ -757,6 +900,25 @@ function main() {
   const mp = url.match(/\/__lt\/([A-Za-z0-9_.-]+)\.m3u8/);
   if (mp) {
     const av = decodeURIComponent(mp[1]);
+    // 缩略图诊断：页面钩子抓到 previewList 后会带 spr/tmpl 来敲一下，
+    // 这里只回一条通知，顺手给个空列表（播放器不会用这个响应）。
+    const sq = url.match(/[?&]spr=(\d+)/);
+    if (sq) {
+      const n = parseInt(sq[1], 10) || 0;
+      const ok = /[?&]tmpl=1/.test(url);
+      const ivm = url.match(/[?&]iv=(\d+)/);
+      const sec = ivm ? (parseInt(ivm[1], 10) || 100) : 100;
+      const pm = url.match(/[?&]p=(\d+)/);
+      const mm = url.match(/[?&]m=(\d+)/);
+      const parses = pm ? parseInt(pm[1], 10) : 0;
+      const maxArr = mm ? parseInt(mm[1], 10) : 0;
+      let detail;
+      if (n > 0 && ok) detail = "已接管播放器 · 每张 " + sec + " 秒";
+      else if (n > 0) detail = "抓到 " + n + " 张，但没找到播放器";
+      else detail = "没抓到缩略图数组 · parse " + parses + " 次，最长数组 " + maxArr;
+      notifyOnce("spr:" + av, "Lutube " + VER, n > 0 ? "缩略图 " + n + " 张" : "缩略图未取到", detail, 0);
+      return $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
+    }
     const q = url.match(/[?&]dm=([\d.]+)/);
     const dm = (q ? parseFloat(q[1]) : 0) || dmGet(av);
     dmSet(av, dm);
