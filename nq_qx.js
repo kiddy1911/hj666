@@ -1,7 +1,7 @@
 /**
  * Lutube 在线版 —— 解锁 VIP + 全站去广告 + 完整片源
  * 目标：web-aws.*（HTML 外壳 + l2media） + pwc-aws.*（long/info 只读缓存）
- * 版本：v10-0800
+ * 版本：v11-0812
  *
  * ══ v8：拖动卡顿 ═══════════════════════════════════════════
  *   现象：长片拖动进度条特别卡，短片不明显。
@@ -99,7 +99,7 @@
  *   逐包校验：WAAA-705 第 709 段 6561/6561，TX6 第 151 段 6889/6889，全同步。
  */
 
-const VER = "v10-0800";
+const VER = "v11-0812";
 
 /* ============================================================
  *  MD5（QX 无 crypto）
@@ -440,15 +440,15 @@ const HOOK = [
   "},true);",
   "document.addEventListener('pointerup',function(){PREF.drag=false;},true);",
   "document.addEventListener('pointercancel',function(){PREF.drag=false;},true);",
-  // ---- 缩略图：解锁后只有一路源，站点会走 {url: previewList[6]} 的单图分支 ----
-  // videojs-sprite-thumbnails 2.2.4 取图是
-  //   k(p) = options.urlArray.length ? urlArray[p] : options.url.replace("{index}", p)
-  // 每张图覆盖 interval*columns*rows 秒（默认 1*10*10=100s）。只喂第 7 张时，
-  // 任何时刻都画那一张的格子 → 整条时间轴的缩略图全错。
-  // 这里把 previewList[6] 换成带 {index} 的模板，插件就会按张号去取对的图。
-  // 只在「张数 ≈ 时长/100」时才动手：张数明显偏少说明服务端用了更大的 interval，
-  // 那时换模板只会换成另一种错，宁可不改。
-  "var SPR={list:null,dur:0,applied:0,sheets:0};",
+  // ---- 缩略图 ----
+  // 站点 setupSpriteThumbnails()：源只有一路时走 {url: previewList[6]}，否则走 {urlArray}。
+  // 插件 videojs-sprite-thumbnails 2.2.4 的关键是每张图覆盖 interval*columns*rows 秒，
+  // 默认 interval=1 → 100 秒/张。而服务端是把全部张数平摊到整片时长：
+  // 142 分钟 / 86 张 ≈ 99.07 秒/张，插件按 100 秒算，越往后偏得越多（尾段约 1 分钟）。
+  // 所以两个都要改：张号（url→urlArray）和每张覆盖秒数（interval）。
+  // 实例路径：站点是 Vue2，#app.__vue__ 能拿到根组件，顺着 $children 找到带 luPlayer 的组件。
+  // 插件方法第一次调用后会被替换成 ()=>实例、传参失效，所以分「提前包住」和「事后改实例」两条路。
+  "var SPR={list:null,orig6:null,dur:0,applied:0,sheets:0,iv:0,reported:0};",
   "function sprTemplate(L){",
   "var n=L.length,i,k,j,m,re,t,tests;if(n<4)return '';",
   "for(i=0;i<n;i++){",
@@ -463,21 +463,56 @@ const HOOK = [
   "}}",
   "return '';}",
   "function sprCapture(o){",
-  "if(!o||!o.data||!Array.isArray(o.data.data)||o.data.data.length<2)return;",
-  "var a=o.data.data,i,ok=1;",
-  "for(i=0;i<a.length;i++){if(typeof a[i]!=='string'){ok=0;break;}}",
-  "if(!ok)return;",
-  "SPR.list=a;SPR.sheets=a.length;",
+  "if(SPR.list||!o||!o.data||!Array.isArray(o.data.data)||o.data.data.length<2)return;",
+  "var a=o.data.data,i;",
+  "for(i=0;i<a.length;i++){if(typeof a[i]!=='string')return;}",
+  "SPR.list=a;SPR.sheets=a.length;SPR.orig6=a[6];",
   "var d=SPR.dur||0;",
-  "if(d>0){",
-  "var need=Math.ceil(d/100);",
-  "if(a.length>=need*0.8&&a.length<=need*1.25){",
-  "var t=sprTemplate(a);",
-  "if(t&&a.length>6){a[6]=t;SPR.applied=1;}",
-  "}}",
-  "if(!SPR.reported&&window.__ltAV){SPR.reported=1;",
-  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round(d/60)+'&spr='+SPR.sheets+'&tmpl='+SPR.applied).catch(function(){});}catch(e){}}",
+  "if(d>0){var iv=d/(a.length*100);if(iv>0&&isFinite(iv))SPR.iv=iv;}",
   "}",
+  "function sprFindVm(vm,depth){",
+  "if(!vm||depth>14)return null;",
+  "if(vm.luPlayer&&typeof vm.luPlayer.spriteThumbnails==='function')return vm;",
+  "var ch=vm.$children||[];",
+  "for(var i=0;i<ch.length;i++){var r=sprFindVm(ch[i],depth+1);if(r)return r;}",
+  "return null;}",
+  "function sprOpts(opts){",
+  "var iv=SPR.iv||1;",
+  "var o={urlArray:SPR.list.slice(),width:(opts&&opts.width)||160,height:(opts&&opts.height)||90,columns:(opts&&opts.columns)||10,rows:(opts&&opts.rows)||10,interval:iv};",
+  "if(SPR.orig6!==null&&SPR.list[6]!==SPR.orig6)o.urlArray[6]=SPR.orig6;",
+  "return o;}",
+  "function sprTick(){",
+  "try{",
+  "var el=document.getElementById('app')||document.querySelector('#app');",
+  "var root=el&&el.__vue__;if(!root)return;",
+  "var vm=sprFindVm(root,0);if(!vm)return;",
+  "var p=vm.luPlayer;",
+  "if(!SPR.list||SPR.list.length<2)return;",
+  "var ap=p.activePlugins_&&p.activePlugins_.spriteThumbnails;",
+  "if(ap){",
+  "if(p.__ltSprDone)return;",
+  "var inst=null;try{inst=p.spriteThumbnails();}catch(e){}",
+  "var o=inst&&inst.options;",
+  "if(o){o.urlArray=SPR.list.slice();o.url='';o.interval=SPR.iv||1;",
+  "if(SPR.orig6!==null)o.urlArray[6]=SPR.orig6;",
+  "if(inst.state&&!inst.state.ready)try{p.trigger('loadedmetadata');}catch(e){}",
+  "p.__ltSprDone=1;SPR.applied=1;}}",
+  "else if(!p.__ltSpr&&typeof p.spriteThumbnails==='function'){",
+  "p.__ltSpr=1;var orig=p.spriteThumbnails;",
+  "p.spriteThumbnails=function(opts){",
+  "var inst;",
+  "try{if(SPR.list&&SPR.list.length>1)inst=orig.call(p,sprOpts(opts));}catch(e){}",
+  "if(!inst)return orig.call(p,opts);",
+  // 插件的 ready 只在 loadstart/loadedmetadata 里置位；站点调用时这两个事件可能已经过了，
+  // 那就重放一次 loadedmetadata，让插件拿到 tooltip 引用并绑定 mousemove。
+  "try{if(!(inst.state&&inst.state.ready))p.trigger('loadedmetadata');}catch(e){}",
+  "return inst;};",
+  "SPR.applied=1;",
+  "}",
+  "if(SPR.applied&&!SPR.reported&&window.__ltAV){SPR.reported=1;",
+  "try{fetch('/__lt/'+window.__ltAV+'.m3u8?dm='+Math.round((SPR.dur||0)/60)+'&spr='+SPR.sheets+'&tmpl='+SPR.applied+'&iv='+Math.round((SPR.iv||1)*100)).catch(function(){});}catch(e){}}",
+  "}catch(e){}}",
+  "setInterval(sprTick,300);",
   "function patch(d){",
   "if(!d||typeof d!=='object'||!d.avkey||!d.urls)return false;",
   "var a=String(d.avkey);",
@@ -815,8 +850,10 @@ function main() {
     if (sq) {
       const n = parseInt(sq[1], 10) || 0;
       const ok = /[?&]tmpl=1/.test(url);
+      const ivm = url.match(/[?&]iv=(\d+)/);
+      const sec = ivm ? (parseInt(ivm[1], 10) || 100) : 100;
       notifyOnce("spr:" + av, "Lutube " + VER, "缩略图 " + n + " 张",
-        ok ? "已改写成按张号取值" : "地址形态不支持改写，仍是原样");
+        ok ? "已接管播放器 · 每张 " + sec + " 秒" : "未找到播放器实例，仍是原样");
       return $done({ status: 200, headers: M3U8_HEADERS, body: "#EXTM3U\n#EXT-X-ENDLIST" });
     }
     const q = url.match(/[?&]dm=([\d.]+)/);
